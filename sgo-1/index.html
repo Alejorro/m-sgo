@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SGO · Control de Gastos de Obra</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+<!--
+  SGO — Sistema de Gestión de Control de Gastos de Obra
+  Archivo único, sin build, sin backend (localStorage clave "obra_db_v1").
+
+  DECISIONES DE DISEÑO ANTE REQUISITOS AMBIGUOS DEL BRIEF:
+
+  1. Proveedor.saldoAFavor / retención pendiente NO se guardan como campos
+     redundantes: se calculan siempre on-the-fly a partir de los Pagos y
+     Comprobantes (fuente única de verdad). Evita desincronizaciones.
+  2. Saldo a favor: cada Pago con imputaciones menores a su monto genera
+     "saldoAFavorGenerado". Aplicarlo a un comprobante nuevo se modela como
+     un Pago especial tipo APLICACION_SALDO_FAVOR (con su propia imputación),
+     así el ledger queda completo y auditable. Se aplica automáticamente
+     al guardar un comprobante nuevo si el proveedor tiene saldo a favor.
+  3. Anticipos: Pago con tipo ANTICIPO, sin imputaciones, 100% va a saldo a
+     favor; se consume luego como cualquier saldo a favor.
+  4. Fondo de reparo / retenciones: Comprobante.retencionPct (0-100) calcula
+     retencionARS = totalARS*pct/100. Mientras no se "libere", ese monto NO
+     forma parte del saldo exigible (montoPagable = totalARS - retención no
+     liberada). "Liberar retención" la incorpora al saldo pendiente.
+  5. Estado de comprobante: PAGADO si saldoARS<=0.01; PENDIENTE si
+     saldoARS==montoPagable; PARCIAL en cualquier punto intermedio.
+  6. FIFO de imputación: ordena comprobantes pendientes por fecha asc
+     (empate por id) y va llenando saldo a saldo hasta agotar el pago;
+     el remanente no aplicado pasa a saldo a favor.
+  7. Semáforo de presupuesto por rubro: verde <80% del presupuestado,
+     ámbar 80-100%, rojo >100%. Umbral estándar de control de costos.
+  8. Curva S (curva de inversión): el "plan" no está especificado mes a
+     mes en el brief (solo hay presupuesto total por rubro), por lo que se
+     aproxima como una distribución LINEAL del presupuesto total a lo largo
+     del rango de meses con actividad real (desde el primer comprobante
+     hasta el mes actual, o el último comprobante si es posterior). Se
+     documenta en la UI como aproximación.
+  9. TC: se guarda por comprobante/pago (snapshot histórico) y totalUSD se
+     calcula y persiste en el momento; nunca se recalcula con TC futuros.
+     "TC actual" es un parámetro editable en Datos, usado solo para
+     comparar exposición cambiaria en el Tablero.
+  10. Moneda base: fija en ARS (USD es siempre la moneda "paralela" derivada
+      del TC de cada operación), tal como pide el brief. El selector en
+      Datos queda preparado para una futura ampliación.
+  11. Vencimiento de comprobante es opcional; si no se carga, el flujo de
+      caja proyectado y las alertas de vencimiento usan la fecha del
+      comprobante como aproximación de vencimiento.
+  12. IDs: timestamp base36 + contador + random, suficiente para un sistema
+      mono-usuario sin backend.
+  13. Capa de datos aislada en el objeto `db` (db.get/db.set/db.save) para
+      facilitar una futura migración a Supabase sin reescribir la UI: toda
+      lectura/escritura de la app pasa exclusivamente por esas 3 funciones.
+  14. Multi-obra (hasta 5 en simultáneo): un registro liviano en
+      localStorage (`sgo_obras_v1`, módulo `obrasRegistry`) guarda la lista
+      de obras {id, nombre, createdAt} y cuál está activa. Los datos de
+      negocio de cada obra se guardan en una clave propia
+      (`obra_db_v1__<obraId>`); `db.get()/save()` siempre resuelven contra
+      la obra activa, así que el resto de la app no necesita saber que
+      existe más de una obra. Backup/restore, demo y "borrar todo" operan
+      siempre sobre la obra activa únicamente. Una obra preexistente bajo
+      la clave mono-obra original (`obra_db_v1`) se migra automáticamente
+      la primera vez como "Obra 1" (o el nombre que tuviera).
+  15. Total USD de referencia por comprobante: además del TC (obligatorio),
+      cada comprobante admite un "Total USD (referencia)" opcional que el
+      usuario puede completar a mano cuando conoce el valor real en dólares
+      de la factura (p.ej. el TC ingresado fue aproximado). Si se completa,
+      pasa a ser el `totalUSD` efectivo del comprobante (en vez del
+      derivado de totalARS/TC) y de ahí se desprende una "tasa USD
+      efectiva" (`totalUSD/totalARS`) que se usa para prorratear el valor
+      en USD de cada ítem y de cualquier saldo parcial de ese comprobante
+      (pagos, exposición cambiaria, Presupuesto/Tablero en vista USD), de
+      forma que toda la app sea consistente con el valor de referencia
+      ingresado en vez de recalcular siempre con el TC.
+  16. Proveedores y rubros son un catálogo GLOBAL, compartido por todas las
+      obras (no por-obra): se guardan en una clave propia de localStorage
+      (`sgo_global_v1`, módulo `globalCatalog`) y `db.get()` los adjunta por
+      referencia a los datos de la obra activa, así que el resto de la app
+      los lee/escribe exactamente igual que antes sin saberlo. Dar de alta
+      un proveedor o rubro en cualquier obra lo deja disponible en todas.
+      Por eso, si un proveedor/rubro está en uso en CUALQUIER obra (no solo
+      la activa), no se puede borrar (`escanearUsoGlobal()` recorre todas
+      las obras); solo se puede inactivar. La migración desde la versión
+      anterior (donde cada obra tenía su propia copia) fusiona por nombre
+      (y tipo, para rubros) los catálogos de todas las obras existentes en
+      uno solo, remapeando las referencias (proveedorId/rubroId) de cada
+      comprobante/pago/presupuesto al ID canónico resultante.
+-->
+<style>
+  :root{
+    --sgo-bg:#f4f6f9; --sgo-card-radius:.6rem;
+  }
+  body{background:var(--sgo-bg);}
+  .navbar-brand small{display:block;font-size:.65rem;font-weight:400;opacity:.85;}
+  .nav-tabs-main{background:#fff;border-bottom:1px solid #dee2e6;padding:0 .5rem;flex-wrap:wrap;}
+  .nav-tabs-main .nav-link{border:none;border-bottom:3px solid transparent;color:#495057;font-weight:500;}
+  .nav-tabs-main .nav-link.active{border-bottom-color:#0d6efd;color:#0d6efd;background:transparent;}
+  .tab-pane-body{padding:1rem;}
+  .card{border-radius:var(--sgo-card-radius);box-shadow:0 1px 3px rgba(0,0,0,.06);}
+  .kpi-card{border-radius:var(--sgo-card-radius);}
+  .kpi-card .kpi-label{font-size:.72rem;text-transform:uppercase;letter-spacing:.03em;color:#6c757d;}
+  .kpi-card .kpi-value{font-size:1.35rem;font-weight:700;}
+  .kpi-card .kpi-sub{font-size:.75rem;color:#6c757d;}
+  table.table-sgo{font-size:.85rem;}
+  table.table-sgo th{font-size:.72rem;text-transform:uppercase;letter-spacing:.02em;color:#6c757d;white-space:nowrap;}
+  .semaforo-dot{display:inline-block;width:.65rem;height:.65rem;border-radius:50%;margin-right:.3rem;}
+  .semaforo-verde{background:#198754;}
+  .semaforo-ambar{background:#fd7e14;}
+  .semaforo-rojo{background:#dc3545;}
+  .badge-estado-PENDIENTE{background:#dc3545;}
+  .badge-estado-PARCIAL{background:#fd7e14;}
+  .badge-estado-PAGADO{background:#198754;}
+  .chart-card canvas{max-height:280px;}
+  #toast-area{position:fixed;top:1rem;right:1rem;z-index:2000;width:320px;}
+  .form-section-title{font-size:.78rem;text-transform:uppercase;letter-spacing:.03em;color:#6c757d;font-weight:600;margin-bottom:.4rem;}
+  .item-row input, .item-row select{font-size:.85rem;}
+  .clickable{cursor:pointer;}
+  .text-strike{text-decoration:line-through;opacity:.6;}
+  .scroll-x{overflow-x:auto;}
+  @media (max-width:576px){
+    .kpi-card .kpi-value{font-size:1.1rem;}
+    table.table-sgo{font-size:.78rem;}
+  }
+</style>
+</head>
+<body>
+
+<div id="toast-area"></div>
+
+<nav class="navbar navbar-expand bg-white border-bottom shadow-sm sticky-top">
+  <div class="container-fluid">
+    <span class="navbar-brand mb-0">
+      <i class="bi bi-building"></i> <span id="hdr-nombre-obra">SGO</span>
+      <small id="hdr-last-action">Sistema de Gestión de Control de Gastos de Obra</small>
+    </span>
+    <div class="ms-auto d-flex align-items-center gap-2">
+      <select class="form-select form-select-sm" id="obra-selector" style="width:auto;max-width:180px;" onchange="onCambiarObraSelector()" title="Cambiar de obra"></select>
+      <button class="btn btn-sm btn-outline-primary" id="btn-nueva-obra" onclick="onCrearObra()" title="Nueva obra"><i class="bi bi-plus-lg"></i></button>
+      <span class="text-muted small d-none d-md-inline" id="hdr-tc-actual"></span>
+    </div>
+  </div>
+</nav>
+
+<ul class="nav nav-tabs nav-tabs-main" id="nav-tabs-main">
+  <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-comprobantes" type="button"><i class="bi bi-receipt"></i> Comprobantes</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-ctacte" type="button"><i class="bi bi-bank"></i> Cuenta Corriente</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-tablero" type="button"><i class="bi bi-bar-chart-line"></i> Tablero</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-presupuesto" type="button"><i class="bi bi-wallet2"></i> Presupuesto</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-rubros" type="button"><i class="bi bi-tags"></i> Rubros</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-proveedores" type="button"><i class="bi bi-people"></i> Proveedores</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-datos" type="button"><i class="bi bi-gear"></i> Datos</button></li>
+</ul>
+
+<div class="tab-content">
+
+<!-- ===================== COMPROBANTES ===================== -->
+<div class="tab-pane fade show active" id="pane-comprobantes">
+  <div class="tab-pane-body">
+    <div class="card mb-3">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-plus-circle"></i> <span id="comp-form-title">Nuevo Comprobante</span></span>
+        <button class="btn btn-sm btn-outline-secondary" id="btn-comp-cancelar" style="display:none;" onclick="cancelarEdicionComprobante()">Cancelar edición</button>
+      </div>
+      <div class="card-body">
+        <div class="row g-2 mb-2">
+          <div class="col-6 col-md-2">
+            <label class="form-label small mb-0">Fecha *</label>
+            <input type="date" class="form-control form-control-sm" id="comp-fecha">
+          </div>
+          <div class="col-6 col-md-3">
+            <label class="form-label small mb-0">Proveedor *</label>
+            <input type="text" class="form-control form-control-sm" id="comp-proveedor" list="dl-proveedores" placeholder="Nombre del proveedor">
+            <datalist id="dl-proveedores"></datalist>
+          </div>
+          <div class="col-6 col-md-2">
+            <label class="form-label small mb-0">Tipo Comp.</label>
+            <select class="form-select form-select-sm" id="comp-tipo">
+              <option value="">—</option>
+              <option>Factura A</option>
+              <option>Factura B</option>
+              <option>Factura C</option>
+              <option>Recibo</option>
+              <option>Remito</option>
+              <option>Presupuesto</option>
+              <option>Otro</option>
+            </select>
+          </div>
+          <div class="col-6 col-md-2">
+            <label class="form-label small mb-0">Número</label>
+            <input type="text" class="form-control form-control-sm" id="comp-numero">
+          </div>
+          <div class="col-6 col-md-1">
+            <label class="form-label small mb-0">TC *</label>
+            <input type="number" class="form-control form-control-sm" id="comp-tc" min="0.01" step="0.01">
+          </div>
+          <div class="col-6 col-md-2">
+            <label class="form-label small mb-0">Vencimiento</label>
+            <input type="date" class="form-control form-control-sm" id="comp-vencimiento">
+          </div>
+        </div>
+        <div class="row g-2 mb-2">
+          <div class="col-6 col-md-4">
+            <label class="form-label small mb-0">Rubro por defecto *</label>
+            <select class="form-select form-select-sm" id="comp-rubro-default" onchange="onRubroDefaultChange()"></select>
+          </div>
+          <div class="col-6 col-md-4">
+            <label class="form-label small mb-0">Retención / Fondo de reparo (%)</label>
+            <input type="number" class="form-control form-control-sm" id="comp-retencion-pct" min="0" max="100" step="0.5" value="0">
+          </div>
+          <div class="col-6 col-md-4">
+            <label class="form-label small mb-0">Total USD (referencia)</label>
+            <input type="number" class="form-control form-control-sm" id="comp-usd-manual" min="0" step="0.01" placeholder="Auto (según TC)" oninput="actualizarSubtotalForm()">
+            <div class="form-text" style="font-size:.7rem;">Vacío = se calcula con el TC. Completar solo si conoce el valor en USD real de esta factura.</div>
+          </div>
+        </div>
+
+        <div class="form-section-title mt-3">Ítems</div>
+        <div class="scroll-x">
+        <table class="table table-sm table-sgo align-middle">
+          <thead><tr>
+            <th style="min-width:180px;">Descripción</th>
+            <th style="min-width:150px;">Rubro</th>
+            <th style="width:110px;">Monto Unit.</th>
+            <th style="width:80px;">Cant.</th>
+            <th style="width:120px;">Total</th>
+            <th style="width:40px;"></th>
+          </tr></thead>
+          <tbody id="comp-items-body"></tbody>
+        </table>
+        </div>
+        <button class="btn btn-sm btn-outline-primary" onclick="agregarItemRow()"><i class="bi bi-plus-lg"></i> Agregar línea</button>
+
+        <div class="d-flex justify-content-end align-items-center mt-3 gap-4">
+          <div class="text-end">
+            <div class="text-muted small">Subtotal</div>
+            <div class="fs-5 fw-bold" id="comp-subtotal-ars">$ 0,00</div>
+            <div class="text-muted small" id="comp-subtotal-usd">US$ 0,00</div>
+          </div>
+          <div>
+            <button class="btn btn-secondary me-2" onclick="limpiarFormComprobante()">Limpiar</button>
+            <button class="btn btn-primary" id="btn-comp-guardar" onclick="onGuardarComprobante()"><i class="bi bi-save"></i> Guardar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><i class="bi bi-list-ul"></i> Listado de Comprobantes</div>
+      <div class="card-body">
+        <div class="row g-2 mb-3">
+          <div class="col-6 col-md-2">
+            <input type="text" class="form-control form-control-sm" id="flt-comp-texto" placeholder="Buscar..." oninput="renderComprobantesListado()">
+          </div>
+          <div class="col-6 col-md-2">
+            <select class="form-select form-select-sm" id="flt-comp-proveedor" onchange="renderComprobantesListado()"><option value="">Todos los proveedores</option></select>
+          </div>
+          <div class="col-6 col-md-2">
+            <select class="form-select form-select-sm" id="flt-comp-estado" onchange="renderComprobantesListado()">
+              <option value="">Todos los estados</option>
+              <option value="PENDIENTE">Pendiente</option>
+              <option value="PARCIAL">Parcial</option>
+              <option value="PAGADO">Pagado</option>
+            </select>
+          </div>
+          <div class="col-6 col-md-2">
+            <input type="date" class="form-control form-control-sm" id="flt-comp-desde" onchange="renderComprobantesListado()">
+          </div>
+          <div class="col-6 col-md-2">
+            <input type="date" class="form-control form-control-sm" id="flt-comp-hasta" onchange="renderComprobantesListado()">
+          </div>
+        </div>
+        <div class="scroll-x">
+        <table class="table table-sm table-sgo table-hover align-middle">
+          <thead><tr>
+            <th>Fecha</th><th>Proveedor</th><th>Tipo/Número</th><th class="text-end">Total ARS</th><th class="text-end">Total USD</th><th class="text-end">Saldo ARS</th><th>Estado</th><th>Retención</th><th></th>
+          </tr></thead>
+          <tbody id="comp-listado-body"></tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== CUENTA CORRIENTE ===================== -->
+<div class="tab-pane fade" id="pane-ctacte">
+  <div class="tab-pane-body">
+    <div class="card mb-3">
+      <div class="card-header"><i class="bi bi-people"></i> Resumen por Proveedor</div>
+      <div class="card-body">
+        <div class="scroll-x">
+        <table class="table table-sm table-sgo table-hover align-middle">
+          <thead><tr>
+            <th>Proveedor</th><th class="text-end">Facturado ARS</th><th class="text-end">Pagado ARS</th><th class="text-end">Saldo Deudor ARS</th><th class="text-end">Saldo a Favor ARS</th><th class="text-end">Retenido Pendiente ARS</th><th></th>
+          </tr></thead>
+          <tbody id="ctacte-resumen-body"></tbody>
+          <tfoot id="ctacte-resumen-foot"></tfoot>
+        </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="ctacte-extracto-card" style="display:none;">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-journal-text"></i> Extracto: <span id="ctacte-prov-nombre"></span></span>
+        <div>
+          <button class="btn btn-sm btn-success" onclick="abrirModalPago()"><i class="bi bi-cash-coin"></i> Registrar Pago</button>
+          <button class="btn btn-sm btn-outline-secondary" onclick="exportarExtractoCSV()"><i class="bi bi-filetype-csv"></i> CSV</button>
+          <button class="btn btn-sm btn-outline-secondary" onclick="exportarExtractoExcel()"><i class="bi bi-file-earmark-excel"></i> Excel</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <div id="ctacte-retenciones-panel" class="mb-3"></div>
+        <div class="scroll-x">
+        <table class="table table-sm table-sgo align-middle">
+          <thead><tr>
+            <th>Fecha</th><th>Tipo</th><th>Detalle</th><th class="text-end">Debe ARS</th><th class="text-end">Haber ARS</th><th class="text-end">Saldo ARS</th><th></th>
+          </tr></thead>
+          <tbody id="ctacte-extracto-body"></tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== TABLERO ===================== -->
+<div class="tab-pane fade" id="pane-tablero">
+  <div class="tab-pane-body">
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="row g-2 align-items-end">
+          <div class="col-6 col-md-2">
+            <label class="form-label small mb-0">Desde</label>
+            <input type="date" class="form-control form-control-sm" id="tb-desde" onchange="renderTablero()">
+          </div>
+          <div class="col-6 col-md-2">
+            <label class="form-label small mb-0">Hasta</label>
+            <input type="date" class="form-control form-control-sm" id="tb-hasta" onchange="renderTablero()">
+          </div>
+          <div class="col-6 col-md-3">
+            <label class="form-label small mb-0">Rubro</label>
+            <select class="form-select form-select-sm" id="tb-rubro" onchange="renderTablero()"><option value="">Todos los rubros</option></select>
+          </div>
+          <div class="col-6 col-md-3">
+            <label class="form-label small mb-0">Proveedor</label>
+            <select class="form-select form-select-sm" id="tb-proveedor" onchange="renderTablero()"><option value="">Todos los proveedores</option></select>
+          </div>
+          <div class="col-6 col-md-2">
+            <label class="form-label small mb-0">Moneda</label>
+            <div class="btn-group w-100" role="group">
+              <button class="btn btn-sm btn-outline-primary active" id="tb-moneda-ars" onclick="setMonedaVista('ARS')">ARS</button>
+              <button class="btn btn-sm btn-outline-primary" id="tb-moneda-usd" onclick="setMonedaVista('USD')">USD</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-3 mb-3" id="tb-kpis"></div>
+    <div class="row g-3 mb-3" id="tb-alertas"></div>
+
+    <div class="row g-3 mb-3">
+      <div class="col-md-6">
+        <div class="card chart-card h-100"><div class="card-header">Gasto por Rubro</div><div class="card-body"><canvas id="chart-pie-rubro"></canvas></div></div>
+      </div>
+      <div class="col-md-6">
+        <div class="card chart-card h-100"><div class="card-header">Gasto por Rubro (por Tipo)</div><div class="card-body"><canvas id="chart-bar-rubro"></canvas></div></div>
+      </div>
+    </div>
+    <div class="row g-3 mb-3">
+      <div class="col-md-6">
+        <div class="card chart-card h-100"><div class="card-header">Evolución Mensual del Gasto</div><div class="card-body"><canvas id="chart-mensual"></canvas></div></div>
+      </div>
+      <div class="col-md-6">
+        <div class="card chart-card h-100"><div class="card-header">Gasto por Tipo de Rubro y Mes</div><div class="card-body"><canvas id="chart-stacked-mes"></canvas></div></div>
+      </div>
+    </div>
+    <div class="row g-3 mb-3">
+      <div class="col-md-6">
+        <div class="card chart-card h-100"><div class="card-header">Top Proveedores</div><div class="card-body"><canvas id="chart-top-proveedores"></canvas></div></div>
+      </div>
+      <div class="col-md-6">
+        <div class="card chart-card h-100">
+          <div class="card-header">Curva de Inversión (Real vs Plan) <i class="bi bi-info-circle" title="Plan aproximado: presupuesto total distribuido linealmente entre el primer mes con actividad y el mes actual."></i></div>
+          <div class="card-body"><canvas id="chart-curva-s"></canvas></div>
+        </div>
+      </div>
+    </div>
+    <div class="card mb-3">
+      <div class="card-header">Flujo de Caja Proyectado (saldo pendiente por mes de vencimiento)</div>
+      <div class="card-body"><canvas id="chart-flujo-caja" style="max-height:260px;"></canvas></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== PRESUPUESTO ===================== -->
+<div class="tab-pane fade" id="pane-presupuesto">
+  <div class="tab-pane-body">
+    <div class="d-flex justify-content-end mb-3">
+      <div class="btn-group" role="group" style="width:160px;">
+        <button class="btn btn-sm btn-outline-primary active" id="presu-moneda-ars" onclick="setMonedaVista('ARS')">ARS</button>
+        <button class="btn btn-sm btn-outline-primary" id="presu-moneda-usd" onclick="setMonedaVista('USD')">USD</button>
+      </div>
+    </div>
+    <div class="row g-3 mb-3" id="presu-kpis"></div>
+    <div class="card">
+      <div class="card-header"><i class="bi bi-wallet2"></i> Presupuesto por Rubro</div>
+      <div class="card-body">
+        <p class="text-muted small">El presupuesto se carga y edita siempre en ARS; "Real" y "Desvío" se muestran en la moneda seleccionada (USD usa el TC histórico de cada comprobante; el presupuesto se valúa al TC actual).</p>
+        <div class="scroll-x">
+        <table class="table table-sm table-sgo align-middle">
+          <thead><tr>
+            <th>Rubro</th><th>Tipo</th><th style="width:160px;">Presupuestado (ARS)</th><th class="text-end">Real</th><th class="text-end">Desvío</th><th class="text-end">Desvío %</th><th>Estado</th>
+          </tr></thead>
+          <tbody id="presu-body"></tbody>
+          <tfoot id="presu-foot"></tfoot>
+        </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== RUBROS ===================== -->
+<div class="tab-pane fade" id="pane-rubros">
+  <div class="tab-pane-body">
+    <div class="card mb-3">
+      <div class="card-header"><span id="rubro-form-title">Nuevo Rubro</span></div>
+      <div class="card-body">
+        <div class="row g-2">
+          <div class="col-6 col-md-4">
+            <label class="form-label small mb-0">Nombre *</label>
+            <input type="text" class="form-control form-control-sm" id="rubro-nombre">
+          </div>
+          <div class="col-6 col-md-3">
+            <label class="form-label small mb-0">Tipo *</label>
+            <select class="form-select form-select-sm" id="rubro-tipo">
+              <option value="MATERIAL">MATERIAL</option>
+              <option value="MANO_OBRA">MANO_OBRA</option>
+              <option value="HONORARIOS">HONORARIOS</option>
+              <option value="IMPUESTOS">IMPUESTOS</option>
+              <option value="CONTRATO">CONTRATO</option>
+            </select>
+          </div>
+          <div class="col-12 col-md-3 d-flex align-items-end gap-2">
+            <button class="btn btn-primary btn-sm" onclick="onGuardarRubro()"><i class="bi bi-save"></i> Guardar</button>
+            <button class="btn btn-secondary btn-sm" id="btn-rubro-cancelar" style="display:none;" onclick="cancelarEdicionRubro()">Cancelar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <div class="scroll-x">
+        <table class="table table-sm table-sgo table-hover align-middle">
+          <thead><tr><th>Nombre</th><th>Tipo</th><th>Estado</th><th></th></tr></thead>
+          <tbody id="rubros-body"></tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== PROVEEDORES ===================== -->
+<div class="tab-pane fade" id="pane-proveedores">
+  <div class="tab-pane-body">
+    <div class="card mb-3">
+      <div class="card-header"><span id="prov-form-title">Nuevo Proveedor</span></div>
+      <div class="card-body">
+        <div class="row g-2 mb-2">
+          <div class="col-6 col-md-3">
+            <label class="form-label small mb-0">Nombre *</label>
+            <input type="text" class="form-control form-control-sm" id="prov-nombre">
+          </div>
+          <div class="col-6 col-md-2">
+            <label class="form-label small mb-0">CUIT</label>
+            <input type="text" class="form-control form-control-sm" id="prov-cuit">
+          </div>
+          <div class="col-6 col-md-2">
+            <label class="form-label small mb-0">Contacto</label>
+            <input type="text" class="form-control form-control-sm" id="prov-contacto">
+          </div>
+          <div class="col-6 col-md-3">
+            <label class="form-label small mb-0">Email</label>
+            <input type="email" class="form-control form-control-sm" id="prov-email">
+          </div>
+          <div class="col-6 col-md-2">
+            <label class="form-label small mb-0">Tel</label>
+            <input type="text" class="form-control form-control-sm" id="prov-tel">
+          </div>
+        </div>
+        <div class="row g-2">
+          <div class="col-12 col-md-8">
+            <label class="form-label small mb-0">Notas</label>
+            <input type="text" class="form-control form-control-sm" id="prov-notas">
+          </div>
+          <div class="col-12 col-md-4 d-flex align-items-end gap-2">
+            <button class="btn btn-primary btn-sm" onclick="onGuardarProveedor()"><i class="bi bi-save"></i> Guardar</button>
+            <button class="btn btn-secondary btn-sm" id="btn-prov-cancelar" style="display:none;" onclick="cancelarEdicionProveedor()">Cancelar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <div class="scroll-x">
+        <table class="table table-sm table-sgo table-hover align-middle">
+          <thead><tr><th>Nombre</th><th>CUIT</th><th>Contacto</th><th>Email</th><th>Tel</th><th>Notas</th><th>Estado</th><th></th></tr></thead>
+          <tbody id="provs-body"></tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== DATOS ===================== -->
+<div class="tab-pane fade" id="pane-datos">
+  <div class="tab-pane-body">
+    <div class="card mb-3">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-building"></i> Obras (<span id="obras-limite-hint"></span>)</span>
+        <button class="btn btn-sm btn-primary" id="btn-nueva-obra-datos" onclick="onCrearObra()"><i class="bi bi-plus-lg"></i> Nueva Obra</button>
+      </div>
+      <div class="card-body">
+        <p class="text-muted small">Cada obra mantiene sus propios comprobantes, pagos y presupuesto de forma independiente. Los proveedores y rubros son un catálogo compartido: lo que se crea en una obra está disponible en todas. Se permite gestionar hasta 5 obras en simultáneo; use el selector del encabezado para cambiar de obra activa.</p>
+        <div class="scroll-x">
+        <table class="table table-sm table-sgo table-hover align-middle">
+          <thead><tr><th>Nombre</th><th>Creada</th><th></th></tr></thead>
+          <tbody id="obras-management-body"></tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+    <div class="row g-3">
+      <div class="col-md-6">
+        <div class="card mb-3">
+          <div class="card-header"><i class="bi bi-sliders"></i> Parámetros</div>
+          <div class="card-body">
+            <label class="form-label small mb-0">Moneda base</label>
+            <select class="form-select form-select-sm mb-2" id="param-moneda-base" disabled><option value="ARS">ARS (fija)</option></select>
+            <label class="form-label small mb-0">TC Actual (para exposición cambiaria en Tablero)</label>
+            <input type="number" class="form-control form-control-sm mb-2" id="param-tc-actual" min="0" step="0.01">
+            <button class="btn btn-sm btn-primary" onclick="onGuardarParametros()"><i class="bi bi-save"></i> Guardar Parámetros</button>
+          </div>
+        </div>
+        <div class="card mb-3">
+          <div class="card-header"><i class="bi bi-database"></i> Backup</div>
+          <div class="card-body">
+            <p class="text-muted small mb-2">El backup exporta/importa los comprobantes, pagos y presupuesto de la obra activa, junto con una copia del catálogo de proveedores y rubros (compartido entre obras) vigente al momento de exportar.</p>
+            <button class="btn btn-sm btn-outline-primary mb-2" onclick="exportarBackup()"><i class="bi bi-download"></i> Exportar Backup (JSON)</button><br>
+            <label class="btn btn-sm btn-outline-secondary mb-0">
+              <i class="bi bi-upload"></i> Importar Backup (JSON)
+              <input type="file" accept=".json" hidden id="input-importar-backup" onchange="onImportarBackup(event)">
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div class="card mb-3">
+          <div class="card-header"><i class="bi bi-file-earmark-arrow-down"></i> Exportaciones</div>
+          <div class="card-body">
+            <button class="btn btn-sm btn-outline-success mb-2" onclick="exportarComprobantesExcel()"><i class="bi bi-file-earmark-excel"></i> Exportar Comprobantes (Excel)</button><br>
+            <button class="btn btn-sm btn-outline-success mb-2" onclick="exportarCtaCteGeneralExcel()"><i class="bi bi-file-earmark-excel"></i> Exportar Cuenta Corriente (Excel)</button><br>
+            <button class="btn btn-sm btn-outline-secondary mb-2" onclick="exportarCtaCteGeneralCSV()"><i class="bi bi-filetype-csv"></i> Exportar Cuenta Corriente (CSV)</button>
+          </div>
+        </div>
+        <div class="card mb-3">
+          <div class="card-header"><i class="bi bi-exclamation-triangle"></i> Datos de Ejemplo</div>
+          <div class="card-body">
+            <button class="btn btn-sm btn-outline-warning mb-2" onclick="cargarDatosDemo()"><i class="bi bi-magic"></i> Cargar Datos de Ejemplo</button><br>
+            <button class="btn btn-sm btn-outline-danger" onclick="borrarTodosLosDatos()"><i class="bi bi-trash"></i> Borrar Todos los Datos</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div><!-- /tab-content -->
+
+<div class="modal fade" id="modal-pago" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-cash-coin"></i> Registrar Pago</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="row g-2 mb-2">
+          <div class="col-6">
+            <label class="form-label small mb-0">Proveedor *</label>
+            <select class="form-select form-select-sm" id="pago-proveedor" onchange="onPagoProveedorChange()"></select>
+          </div>
+          <div class="col-3">
+            <label class="form-label small mb-0">Fecha *</label>
+            <input type="date" class="form-control form-control-sm" id="pago-fecha">
+          </div>
+          <div class="col-3">
+            <label class="form-label small mb-0">TC *</label>
+            <input type="number" class="form-control form-control-sm" id="pago-tc" min="0.01" step="0.01" onchange="onPagoMontoChange()">
+          </div>
+        </div>
+        <div class="row g-2 mb-2">
+          <div class="col-6">
+            <label class="form-label small mb-0">Monto ARS *</label>
+            <input type="number" class="form-control form-control-sm" id="pago-monto" min="0.01" step="0.01" oninput="onPagoMontoChange()">
+          </div>
+          <div class="col-6">
+            <label class="form-label small mb-0">Equivalente USD</label>
+            <input type="text" class="form-control form-control-sm" id="pago-monto-usd" disabled>
+          </div>
+        </div>
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" id="pago-es-anticipo" onchange="onPagoEsAnticipoChange()">
+          <label class="form-check-label small" for="pago-es-anticipo">Es un anticipo (no se imputa a facturas; queda como saldo a favor)</label>
+        </div>
+
+        <div id="pago-imputacion-section">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <div class="form-section-title mb-0">Imputar a facturas pendientes</div>
+            <div class="btn-group btn-group-sm">
+              <button class="btn btn-outline-primary active" id="pago-modo-auto" onclick="setModoImputacion('auto')">Automático (FIFO)</button>
+              <button class="btn btn-outline-primary" id="pago-modo-manual" onclick="setModoImputacion('manual')">Manual</button>
+            </div>
+          </div>
+          <div class="scroll-x">
+          <table class="table table-sm table-sgo align-middle">
+            <thead><tr><th></th><th>Fecha</th><th>Comprobante</th><th class="text-end">Saldo</th><th style="width:130px;">Imputar</th></tr></thead>
+            <tbody id="pago-facturas-body"></tbody>
+          </table>
+          </div>
+          <div class="text-end small" id="pago-resumen-imputacion"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+        <button class="btn btn-success" onclick="onGuardarPago()"><i class="bi bi-save"></i> Registrar Pago</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
