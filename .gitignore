@@ -1,0 +1,14 @@
+node_modules/
+.DS_Store
+
+# Base de datos local (el volumen en prod vive fuera del repo)
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Entorno: solo se versiona .env.example
+.env
+.env.local
+
+npm-debug.log*
