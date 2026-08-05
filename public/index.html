@@ -8,7 +8,9 @@
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
 <!--
   SGO — Sistema de Gestión de Control de Gastos de Obra
-  Archivo único, sin build, sin backend (localStorage clave "obra_db_v1").
+  Front sin build, servido por un backend Fastify que persiste los documentos
+  en SQLite (ver ARQUITECTURA.md). Toda lectura/escritura pasa por `sgoStore`
+  (storage.js), que mantiene el contrato sincrónico que tenía localStorage.
 
   DECISIONES DE DISEÑO ANTE REQUISITOS AMBIGUOS DEL BRIEF:
 
@@ -88,6 +90,16 @@
       (y tipo, para rubros) los catálogos de todas las obras existentes en
       uno solo, remapeando las referencias (proveedorId/rubroId) de cada
       comprobante/pago/presupuesto al ID canónico resultante.
+  17. Persistencia en servidor (multi-dispositivo): las mismas tres claves
+      (`sgo_obras_v1`, `sgo_global_v1`, `obra_db_v1__<obraId>`) ya no viven en
+      localStorage sino en SQLite, como documentos JSON opacos para el server.
+      `storage.js` expone `sgoStore` con la misma interfaz sincrónica que
+      localStorage: hidrata todos los documentos en memoria con un único GET al
+      arrancar, sirve las lecturas desde ese cache y encola las escrituras con
+      un debounce de 400 ms. Por eso la lógica de negocio de este archivo y de
+      app.js no cambió. Cada documento lleva una versión: si otro dispositivo
+      escribió primero, el server rechaza el guardado y la app avisa que hay
+      que recargar, en vez de pisar datos en silencio.
 -->
 <style>
   :root{
@@ -129,6 +141,22 @@
 <body>
 
 <div id="toast-area"></div>
+
+<!-- Otro dispositivo escribió primero: la app queda en solo-lectura hasta recargar.
+     Nunca se pisan datos en silencio. -->
+<div id="sync-conflict-banner" class="alert alert-danger rounded-0 border-0 mb-0 d-flex align-items-center justify-content-between" style="display:none;" role="alert">
+  <span><i class="bi bi-exclamation-triangle-fill"></i>
+    <strong>Otro dispositivo modificó estos datos.</strong>
+    Tus cambios sin guardar no se enviaron. Recargá la página para ver la versión actual.</span>
+  <button class="btn btn-sm btn-light ms-3 text-nowrap" onclick="location.reload()">
+    <i class="bi bi-arrow-clockwise"></i> Recargar</button>
+</div>
+
+<!-- No se pudo hidratar desde el server: la app no arranca, para no aparentar
+     que los datos se perdieron. -->
+<div id="sync-fatal-banner" class="alert alert-dark rounded-0 border-0 mb-0" style="display:none;" role="alert">
+  <i class="bi bi-plug-fill"></i> <span id="sync-fatal-msg"></span>
+</div>
 
 <nav class="navbar navbar-expand bg-white border-bottom shadow-sm sticky-top">
   <div class="container-fluid">
@@ -649,6 +677,7 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="storage.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

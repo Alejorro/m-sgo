@@ -49,7 +49,7 @@ const MAX_OBRAS = 5;
 const obrasRegistry = (function () {
   let reg = null;
   function migrarDesdeMonoObra() {
-    const legacyRaw = localStorage.getItem(LEGACY_DB_KEY);
+    const legacyRaw = sgoStore.getItem(LEGACY_DB_KEY);
     const id = newId('obra');
     let nombre = 'Obra 1';
     if (legacyRaw) {
@@ -57,21 +57,21 @@ const obrasRegistry = (function () {
         const legacy = JSON.parse(legacyRaw);
         nombre = (legacy.parametros && legacy.parametros.nombreObra) || nombre;
       } catch (e) { /* backup previo corrupto: arranca la obra migrada en blanco */ }
-      localStorage.setItem(OBRA_DATA_PREFIX + id, legacyRaw);
-      localStorage.removeItem(LEGACY_DB_KEY);
+      sgoStore.setItem(OBRA_DATA_PREFIX + id, legacyRaw);
+      sgoStore.removeItem(LEGACY_DB_KEY);
     }
     return { obras: [{ id, nombre, createdAt: nowISO() }], activaId: id };
   }
   function load() {
     try {
-      const raw = localStorage.getItem(OBRAS_REGISTRY_KEY);
+      const raw = sgoStore.getItem(OBRAS_REGISTRY_KEY);
       if (raw) return JSON.parse(raw);
     } catch (e) { console.error('Error cargando registro de obras', e); }
     const migrado = migrarDesdeMonoObra();
-    localStorage.setItem(OBRAS_REGISTRY_KEY, JSON.stringify(migrado));
+    sgoStore.setItem(OBRAS_REGISTRY_KEY, JSON.stringify(migrado));
     return migrado;
   }
-  function save() { localStorage.setItem(OBRAS_REGISTRY_KEY, JSON.stringify(reg)); }
+  function save() { sgoStore.setItem(OBRAS_REGISTRY_KEY, JSON.stringify(reg)); }
   return {
     get() { if (!reg) reg = load(); return reg; },
     listar() { return this.get().obras; },
@@ -97,7 +97,7 @@ const obrasRegistry = (function () {
       const r = this.get();
       if (r.obras.length <= 1) return false;
       r.obras = r.obras.filter(x => x.id !== id);
-      localStorage.removeItem(OBRA_DATA_PREFIX + id);
+      sgoStore.removeItem(OBRA_DATA_PREFIX + id);
       if (r.activaId === id) r.activaId = r.obras[0].id;
       save();
       return true;
@@ -169,7 +169,7 @@ const globalCatalog = (function () {
     const catalogo = { proveedores: [], rubros: [] };
     const reg = obrasRegistry.get();
     for (const obra of reg.obras) {
-      const raw = localStorage.getItem(OBRA_DATA_PREFIX + obra.id);
+      const raw = sgoStore.getItem(OBRA_DATA_PREFIX + obra.id);
       if (!raw) continue;
       let obraData;
       try { obraData = JSON.parse(raw); } catch (e) { continue; }
@@ -177,23 +177,23 @@ const globalCatalog = (function () {
       remapReferenciasObra(obraData, proveedorIdMap, rubroIdMap);
       delete obraData.proveedores;
       delete obraData.rubros;
-      localStorage.setItem(OBRA_DATA_PREFIX + obra.id, JSON.stringify(obraData));
+      sgoStore.setItem(OBRA_DATA_PREFIX + obra.id, JSON.stringify(obraData));
     }
     if (catalogo.rubros.length === 0) catalogo.rubros = seedRubros();
     return catalogo;
   }
   function load() {
     try {
-      const raw = localStorage.getItem(GLOBAL_CATALOG_KEY);
+      const raw = sgoStore.getItem(GLOBAL_CATALOG_KEY);
       if (raw) return JSON.parse(raw);
     } catch (e) { console.error('Error cargando catálogo global', e); }
     const migrado = migrarDesdeObras();
-    localStorage.setItem(GLOBAL_CATALOG_KEY, JSON.stringify(migrado));
+    sgoStore.setItem(GLOBAL_CATALOG_KEY, JSON.stringify(migrado));
     return migrado;
   }
   return {
     get() { if (!cat) cat = load(); return cat; },
-    save() { localStorage.setItem(GLOBAL_CATALOG_KEY, JSON.stringify(cat)); },
+    save() { sgoStore.setItem(GLOBAL_CATALOG_KEY, JSON.stringify(cat)); },
     mergeDesde(proveedoresNuevos, rubrosNuevos) {
       const catalogo = this.get();
       const maps = mergeProveedoresYRubros(catalogo, proveedoresNuevos, rubrosNuevos);
@@ -205,7 +205,7 @@ const globalCatalog = (function () {
 
 function leerDatosDeObra(obraId) {
   if (obraId === obrasRegistry.activaId()) return db.get();
-  try { return JSON.parse(localStorage.getItem(OBRA_DATA_PREFIX + obraId) || 'null'); } catch (e) { return null; }
+  try { return JSON.parse(sgoStore.getItem(OBRA_DATA_PREFIX + obraId) || 'null'); } catch (e) { return null; }
 }
 
 function escanearUsoGlobal() {
@@ -246,7 +246,7 @@ const db = (function () {
   function load() {
     let parsed = null;
     try {
-      const raw = localStorage.getItem(OBRA_DATA_PREFIX + obrasRegistry.activaId());
+      const raw = sgoStore.getItem(OBRA_DATA_PREFIX + obrasRegistry.activaId());
       if (raw) parsed = JSON.parse(raw);
     } catch (e) {
       console.error('Error cargando datos de la obra', e);
@@ -282,10 +282,12 @@ const db = (function () {
       const obraEspecifico = Object.assign({}, data);
       delete obraEspecifico.proveedores;
       delete obraEspecifico.rubros;
-      localStorage.setItem(OBRA_DATA_PREFIX + obrasRegistry.activaId(), JSON.stringify(obraEspecifico));
+      sgoStore.setItem(OBRA_DATA_PREFIX + obrasRegistry.activaId(), JSON.stringify(obraEspecifico));
+      // globalCatalog.save() es un no-op si el catálogo no cambió: sgoStore
+      // compara el string y no encola escrituras idénticas.
       globalCatalog.save();
-      const hdr = document.getElementById('hdr-last-action');
-      if (hdr) hdr.textContent = 'Último guardado: ' + new Date(data.meta.updatedAt).toLocaleString('es-AR');
+      // El indicador de #hdr-last-action ahora lo maneja sgoStore, que sabe si
+      // la escritura llegó al server (ver renderEstadoSync).
     },
     reset() {
       data = attachCatalogoGlobal(defaultData());
@@ -330,10 +332,13 @@ function recalcComprobante(c, data) {
   else c.estado = 'PENDIENTE';
 }
 
-function recalcTodo() {
+/* `opts.persist === false` recalcula solo en memoria, sin guardar. Se usa en el
+   arranque y al cambiar de obra: ahí no hay nada que el usuario haya cambiado,
+   y contra un server persistir sin motivo sería escribir sola al abrirse. */
+function recalcTodo(opts) {
   const data = db.get();
   for (const c of data.comprobantes) recalcComprobante(c, data);
-  db.save();
+  if (!opts || opts.persist !== false) db.save();
 }
 
 function totalFacturadoProveedor(proveedorId, data) {
@@ -1751,7 +1756,7 @@ function cambiarObraActiva(id) {
   obrasRegistry.setActiva(id);
   state.ctaCteProveedorId = null;
   document.getElementById('ctacte-extracto-card').style.display = 'none';
-  recalcTodo();
+  recalcTodo({ persist: false });
   limpiarFormComprobante();
   cancelarEdicionRubro();
   cancelarEdicionProveedor();
@@ -1792,7 +1797,7 @@ function onEliminarObra(id) {
   if (eraActiva) {
     state.ctaCteProveedorId = null;
     document.getElementById('ctacte-extracto-card').style.display = 'none';
-    recalcTodo();
+    recalcTodo({ persist: false });
     renderAll();
   } else {
     renderObraHeader();
@@ -1873,8 +1878,45 @@ function renderAll() {
   actualizarHeaderTC();
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  recalcTodo();
+/* ===================== SINCRONIZACIÓN (UI) ===================== */
+/* El estado de guardado lo publica sgoStore; acá solo se pinta. */
+
+function renderEstadoSync(s) {
+  const hdr = document.getElementById('hdr-last-action');
+  if (hdr) {
+    if (s.bloqueado) hdr.textContent = 'Sin guardar — recargá la página';
+    else if (s.estado === 'saving') hdr.textContent = 'Guardando…';
+    else if (s.estado === 'offline') hdr.textContent = 'Sin conexión — reintentando';
+    else if (s.ultimoGuardado) hdr.textContent = 'Guardado ' + s.ultimoGuardado.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+    else hdr.textContent = 'Sistema de Gestión de Control de Gastos de Obra';
+  }
+  const banner = document.getElementById('sync-conflict-banner');
+  if (banner) banner.style.display = s.bloqueado ? '' : 'none';
+}
+
+function mostrarErrorFatal(mensaje) {
+  const banner = document.getElementById('sync-fatal-banner');
+  if (banner) {
+    document.getElementById('sync-fatal-msg').textContent = mensaje;
+    banner.style.display = '';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+  // Único punto asincrónico: traer la base del server antes de arrancar. Si
+  // falla, NO se sigue: una app con datos vacíos parecería haberlos perdido y
+  // el usuario empezaría a cargar encima.
+  try {
+    await sgoStore.hydrate();
+  } catch (err) {
+    console.error('No se pudo cargar la base', err);
+    mostrarErrorFatal('No se pudo conectar con el servidor. Recargá la página; si sigue, avisá.');
+    return;
+  }
+
+  sgoStore.onEstado(renderEstadoSync);
+
+  recalcTodo({ persist: false });
   limpiarFormComprobante();
   cancelarEdicionRubro();
   cancelarEdicionProveedor();
@@ -1892,5 +1934,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  window.addEventListener('beforeunload', () => { db.save(); });
+  // Ya no se guarda acá: un fetch disparado en beforeunload no llega. sgoStore
+  // pide confirmación si quedan escrituras sin confirmar.
+  window.addEventListener('beforeunload', (e) => sgoStore.beforeUnload(e));
 });

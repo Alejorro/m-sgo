@@ -2,10 +2,10 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "sgo-static",
-      "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8743"],
-      "port": 8743
+      "name": "sgo",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000
     }
   ]
 }
