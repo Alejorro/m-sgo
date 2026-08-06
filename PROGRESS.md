@@ -121,11 +121,33 @@ manda el token viejo (`user.token`) en vez del `user.accessToken`. Se creó el
 dominio con la mutación `customDomainCreate` de la API GraphQL directamente,
 con el `accessToken`. No es un problema de permisos ni de plan.
 
-### Pendiente (necesita la mano del usuario, no del código)
+### Backup a R2: verificado en producción
 
-- Las cuatro credenciales `R2_*`: sin ellas el backup arranca **apagado** (lo
-  dice en el log). Es lo único que falta para cerrar el punto de backup.
-- El CNAME `sgo` → `pselz0e9.up.railway.app` en el DNS de `dot4sa.com`.
+Bucket `sgo-backups` en Cloudflare R2, token acotado a ese bucket con permiso
+Object Read & Write. El log de producción muestra `backup a R2 activo` y
+`backup subido a R2 key="sgo/sgo-2026-08-06T20-46-14Z.dump" bytes=2338`.
+
+No se confió en el log: se listó el bucket desde afuera con las credenciales,
+se bajó el objeto y se confirmó la firma `PGDMP`. El archivo se abrió con
+`pg_restore -l` (versión 18, dentro del contenedor) y contiene la tabla
+`docs`, sus datos y la PK.
+
+**Para restaurar hace falta `pg_restore` 18+.** Un `pg_restore` 16 rechaza el
+archivo con *"versión no soportada (1.16) en el encabezado"*. Anotado en el
+README.
+
+### Dominio
+
+Quedó en **`sgo.dot4sa.com.ar`**, no en `.com`. Las dos zonas son distintas:
+`dot4sa.com.ar` la maneja el panel de Hostmar (donde ya viven
+`api.dot4sa.com.ar` y `forecast.dot4sa.com.ar`), mientras que `dot4sa.com`
+está delegada a Route 53 y tiene colgado el Microsoft 365 de la empresa —
+tocarla para un subdominio no valía el riesgo.
+
+El CNAME `sgo` → `n7ikq8cx.up.railway.app` está cargado y los dos NS
+autoritativos lo devuelven. Al momento de escribir esto, Google y Cloudflare
+todavía servían la respuesta negativa cacheada (el SOA declara 86400 s), así
+que Railway seguía en `VALIDATING_OWNERSHIP`. Es espera, no configuración.
 
 **Quedó un Volume (`m-sgo-volume`, montado en `/data`) de la etapa SQLite**,
 ya sin uso: nada lo lee ni lo escribe. No se borró para no tocar

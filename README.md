@@ -131,6 +131,12 @@ createdb sgo_restaurada
 pg_restore --dbname "postgres://.../sgo_restaurada" backup-2026-08-06.dump
 ```
 
+**Hace falta `pg_restore` 18 o superior.** Los dumps los escribe el `pg_dump`
+18 del contenedor, y un `pg_restore` más viejo los rechaza con *"versión no
+soportada (1.16) en el encabezado del archivo"*. En una Mac con un Postgres
+más viejo instalado: `brew install postgresql@18` y usar el binario de ahí
+(no hace falta levantar el server, alcanza con el cliente).
+
 Si el backup es del plan B (`.json` en vez de `.dump`), se reinserta con un
 `INSERT` por cada entrada de `docs`: `{ key, data, version }` van tal cual a
 las columnas `key`, `json` y `version`.
