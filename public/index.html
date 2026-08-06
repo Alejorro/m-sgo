@@ -113,12 +113,17 @@
   .nav-tabs-main{background:#fff;border-bottom:1px solid #dee2e6;padding:0 .5rem;flex-wrap:wrap;}
   .nav-tabs-main .nav-link{border:none;border-bottom:3px solid transparent;color:#495057;font-weight:500;}
   .nav-tabs-main .nav-link.active{border-bottom-color:#0d6efd;color:#0d6efd;background:transparent;}
-  .tab-pane-body{padding:1rem;}
+  .tab-pane-body{padding:1.5rem 1.25rem;}
   .card{border-radius:var(--sgo-card-radius);box-shadow:0 1px 3px rgba(0,0,0,.06);}
+  .card-body{padding:1.25rem;}
+  .card-header{padding:.75rem 1.25rem;font-weight:600;font-size:.92rem;color:#343a40;letter-spacing:.01em;}
+  .tab-pane-body .card.mb-3{margin-bottom:1.75rem !important;}
+  .row.g-2{--bs-gutter-y:.85rem;}
+  .row.g-2.mb-2{margin-bottom:1rem !important;}
   .kpi-card{border-radius:var(--sgo-card-radius);}
   .kpi-card .kpi-label{font-size:.72rem;text-transform:uppercase;letter-spacing:.03em;color:#6c757d;}
-  .kpi-card .kpi-value{font-size:1.35rem;font-weight:700;}
-  .kpi-card .kpi-sub{font-size:.75rem;color:#6c757d;}
+  .kpi-card .kpi-value{font-size:1.35rem;font-weight:700;margin-top:.2rem;}
+  .kpi-card .kpi-sub{font-size:.75rem;color:#6c757d;margin-top:.15rem;}
   table.table-sgo{font-size:.85rem;}
   table.table-sgo th{font-size:.72rem;text-transform:uppercase;letter-spacing:.02em;color:#6c757d;white-space:nowrap;}
   .semaforo-dot{display:inline-block;width:.65rem;height:.65rem;border-radius:50%;margin-right:.3rem;}
@@ -130,7 +135,8 @@
   .badge-estado-PAGADO{background:#198754;}
   .chart-card canvas{max-height:280px;}
   #toast-area{position:fixed;top:1rem;right:1rem;z-index:2000;width:320px;}
-  .form-section-title{font-size:.78rem;text-transform:uppercase;letter-spacing:.03em;color:#6c757d;font-weight:600;margin-bottom:.4rem;}
+  .form-section-title{font-size:.78rem;text-transform:uppercase;letter-spacing:.03em;color:#6c757d;font-weight:600;margin-bottom:.6rem;}
+  label.form-label.mb-0{margin-bottom:.35rem !important;color:#495057;font-weight:500;font-size:.78rem;}
   .item-row input, .item-row select{font-size:.85rem;}
   .clickable{cursor:pointer;}
   .text-strike{text-decoration:line-through;opacity:.6;}
@@ -138,6 +144,10 @@
   @media (max-width:576px){
     .kpi-card .kpi-value{font-size:1.1rem;}
     table.table-sgo{font-size:.78rem;}
+    .tab-pane-body{padding:1rem .85rem;}
+    .card-body{padding:1rem;}
+    .card-header{padding:.6rem .9rem;}
+    .tab-pane-body .card.mb-3{margin-bottom:1.25rem !important;}
   }
 </style>
 </head>
