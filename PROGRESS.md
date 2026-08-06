@@ -4,6 +4,78 @@ Bitácora del proyecto. Lo más reciente arriba.
 
 ---
 
+## 2026-08-06 (4) — Se sacó el banner de conflicto: usuario único, autorresolución silenciosa
+
+Decisión: la app la va a usar una sola persona (posiblemente desde más de un
+dispositivo/pestaña), así que ya no tiene sentido interrumpir con un banner
+pidiendo recargar. Se mantiene el versionado en el server (por las dudas, y
+porque no cuesta nada tenerlo), pero el cliente ya no bloquea ni avisa: ante
+un `409`, `sgoStore` trae la versión fresca, la combina con el cambio local y
+reintenta, todo en silencio.
+
+**`public/storage.js`:**
+- Se sacó `bloqueado`/`ConflictoError`/el estado `'conflict'` enteros.
+- `enviarLote()` y `enviarBorrado()` ahora resuelven el `409` ellos mismos: si
+  hay un resolutor registrado para esa clave lo usan, si no, el cambio local
+  gana tal cual y se reintenta con la versión fresca. Tope de 3 reintentos de
+  conflicto por guardado; si se agotan, esa clave queda para el próximo
+  guardado real (no hay banner que insista).
+- Nuevo método público `registrarResolutor(match, combinar)` — `match` es una
+  clave exacta o un predicado `(key) => boolean` (para prefijos).
+
+**`public/app.js`:** se registran tres resolutores, todos reusando
+mecanismos que ya existían o son triviales (nada de lógica de negocio nueva,
+`recalcTodo()` sigue recalculando todo después):
+- Registro de obras (`sgo_obras_v1`): unión de `obras` por `id`; la obra
+  activa se mantiene si sigue existiendo.
+- Catálogo global (`sgo_global_v1`): el merge idempotente por nombre/tipo que
+  ya usaba la migración vieja (`mergeProveedoresYRubros`).
+- Documento de obra (`obra_db_v1__*`): unión por `id` de `comprobantes` y
+  `pagos`, unión por `rubroId` de `presupuestos`. Si el mismo registro se
+  editó distinto en ambos lados, gana el del server; lo nuevo de cada lado se
+  conserva.
+
+**`public/index.html`:** se borró el `<div id="sync-conflict-banner">`
+entero (el otro cartel, `sync-fatal-banner` para "no se pudo conectar", se
+deja: es un problema distinto — servidor caído, no conflicto de versión).
+
+**Verificado con Chromium real (Playwright), con conflictos genuinos (409
+real de la red, no simulados):**
+- El elemento `sync-conflict-banner` ya no existe en el DOM.
+- Dos pestañas, misma obra, comprobantes distintos: la que pierde la carrera
+  recibe el 409, se resuelve sola, y **ambos comprobantes sobreviven** (mejor
+  que el bloqueo de antes: acá no se pierde nada).
+- Dos pestañas agregan proveedores distintos casi al mismo tiempo: ambos
+  terminan en el catálogo.
+- Dos pestañas crean obras distintas casi al mismo tiempo: ambas terminan en
+  el registro.
+- CA-9 (equivalencia del motor de cálculo contra el `app.js` original)
+  sigue en verde: nada de esto tocó `recalcComprobante`, FIFO, retenciones,
+  ni ningún cálculo de plata.
+
+**Límite conocido, a propósito:** si el mismo registro (mismo comprobante,
+mismo proveedor) se edita distinto en dos pestañas casi al mismo tiempo, gana
+el del server — el cambio de la otra pestaña se pierde en silencio. Es el
+trade-off aceptado al elegir "silencioso" sobre "avisar": para que nunca se
+pierda nada hay que volver a interrumpir al usuario, que es justo lo que se
+pidió sacar.
+
+### Nota operativa: cuidado con `data/` en desarrollo
+
+Durante esta sesión se perdió por error la base de datos de desarrollo del
+usuario (`data/sgo.sqlite`) — un `rm -rf data` de limpieza, en una sesión de
+trabajo anterior, corrido sin volver a chequear si en ese momento `data/`
+apuntaba al `npm run dev` real del usuario o a un servidor de prueba propio.
+Por suerte lo perdido era la data de ejemplo (`cargarDatosDemo()`), no
+trabajo real, pero el error es real: **antes de cualquier limpieza que toque
+`data/` en la raíz del repo, primero confirmar que no hay un servidor real
+del usuario corriendo contra esa ruta** (`lsof -iTCP -sTCP:LISTEN`). No hay
+backup automático configurado todavía (queda para la fase de infra); mientras
+tanto, cualquier `data/sgo.sqlite` de desarrollo es prescindible por diseño,
+pero no debe borrarse sin confirmar primero.
+
+---
+
 ## 2026-08-06 (3) — Banner "permanente": investigado en la máquina real, cero bugs de código encontrados, se blindó contra bfcache
 
 Reporte: el banner de conflicto seguía apareciendo de forma permanente, con

@@ -203,6 +203,49 @@ const globalCatalog = (function () {
   };
 })();
 
+/* ===================== RESOLUCIÓN DE CONFLICTOS (silenciosa) ===================== */
+/* Pensado para un usuario único con más de una pestaña/dispositivo: si un
+   guardado choca contra una versión más nueva, no se interrumpe a nadie —se
+   combina el cambio local arriba de lo último del server y se reintenta. */
+
+function unionPorClave(remotoArr, localArr, clave) {
+  remotoArr = remotoArr || []; localArr = localArr || [];
+  const clavesRemoto = new Set(remotoArr.map((x) => x[clave]));
+  return remotoArr.concat(localArr.filter((x) => !clavesRemoto.has(x[clave])));
+}
+
+// Registro de obras: unión de obras por id (así una obra nueva creada en una
+// pestaña no desaparece si la otra guarda encima); la obra activa se
+// mantiene si sigue existiendo, si no se cae a la del server.
+sgoStore.registrarResolutor(OBRAS_REGISTRY_KEY, (local, remoto) => {
+  const idsRemoto = new Set(remoto.obras.map((o) => o.id));
+  const obras = remoto.obras.concat(local.obras.filter((o) => !idsRemoto.has(o.id)));
+  const activaId = obras.some((o) => o.id === local.activaId) ? local.activaId : remoto.activaId;
+  return { obras, activaId };
+});
+
+// Catálogo global: mismo merge idempotente por nombre/tipo que ya usa la
+// migración vieja (mergeProveedoresYRubros) — un proveedor o rubro nuevo se
+// agrega, uno que ya existía por nombre no se duplica.
+sgoStore.registrarResolutor(GLOBAL_CATALOG_KEY, (local, remoto) => {
+  const catalogo = { proveedores: remoto.proveedores.slice(), rubros: remoto.rubros.slice() };
+  mergeProveedoresYRubros(catalogo, local.proveedores, local.rubros);
+  return catalogo;
+});
+
+// Documento de obra: unión por id de comprobantes/pagos (y por rubroId de
+// presupuestos, que no tienen id propio). Si el mismo registro se editó
+// distinto en los dos lados, gana el del server; lo nuevo de cada lado se
+// conserva. Evita que una pestaña vieja borre de un plumazo lo cargado en
+// otra desde el último hydrate.
+sgoStore.registrarResolutor((key) => key.startsWith(OBRA_DATA_PREFIX), (local, remoto) => {
+  return Object.assign({}, remoto, {
+    comprobantes: unionPorClave(remoto.comprobantes, local.comprobantes, 'id'),
+    pagos: unionPorClave(remoto.pagos, local.pagos, 'id'),
+    presupuestos: unionPorClave(remoto.presupuestos, local.presupuestos, 'rubroId'),
+  });
+});
+
 function leerDatosDeObra(obraId) {
   if (obraId === obrasRegistry.activaId()) return db.get();
   try { return JSON.parse(sgoStore.getItem(OBRA_DATA_PREFIX + obraId) || 'null'); } catch (e) { return null; }
@@ -1884,14 +1927,11 @@ function renderAll() {
 function renderEstadoSync(s) {
   const hdr = document.getElementById('hdr-last-action');
   if (hdr) {
-    if (s.bloqueado) hdr.textContent = 'Sin guardar — recargá la página';
-    else if (s.estado === 'saving') hdr.textContent = 'Guardando…';
+    if (s.estado === 'saving') hdr.textContent = 'Guardando…';
     else if (s.estado === 'offline') hdr.textContent = 'Sin conexión — reintentando';
     else if (s.ultimoGuardado) hdr.textContent = 'Guardado ' + s.ultimoGuardado.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
     else hdr.textContent = 'Sistema de Gestión de Control de Gastos de Obra';
   }
-  const banner = document.getElementById('sync-conflict-banner');
-  if (banner) banner.style.display = s.bloqueado ? '' : 'none';
 }
 
 function mostrarErrorFatal(mensaje) {

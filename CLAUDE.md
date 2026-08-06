@@ -52,26 +52,32 @@ cambio no puede demostrarse neutral, no va.
   comparación es lo que evita conflictos espurios del catálogo global: **no
   quitarla**.
 
-## 4. Concurrencia: nunca pisar datos en silencio
+## 4. Concurrencia: se resuelve sola, sin avisar
 
-Cada documento tiene una versión. Si el server devuelve `409`, la app queda en
-solo-lectura y le pide al usuario que recargue. Ese comportamiento es
-intencional y no se cambia por uno que "resuelva solo" sin discutirlo antes.
+Cada documento tiene una versión. Si el server devuelve `409`, `sgoStore` NO
+bloquea ni muestra nada: combina el cambio local con la versión fresca del
+server (via los resolutores registrados en `app.js`, ver ARQUITECTURA.md §3) y
+reintenta. Es intencional —la app la usa una sola persona, no tiene sentido
+interrumpirla— y no se vuelve a un banner/bloqueo sin discutirlo antes.
 
-## 5. Protocolo de dos usuarios (Alejo / Mariano)
+Si se agrega un nuevo tipo de documento con arrays propios, registrar su
+resolutor (`sgoStore.registrarResolutor`) en vez de dejarlo caer al
+last-write-wins genérico, salvo que el last-write-wins sea realmente lo que
+corresponde para ese documento.
 
-La app la usan dos personas, a veces al mismo tiempo, desde dispositivos
-distintos. No hay login todavía: **no hay forma de saber quién escribió qué**.
+## 5. Usuario único, multi-dispositivo
 
-- Los cambios de la otra persona **no aparecen solos**: hay que recargar.
-- Antes de una sesión de carga larga, recargar para arrancar de la versión más
-  nueva.
-- Si aparece el cartel *"Otro dispositivo modificó estos datos"*, la otra persona
-  guardó primero. Lo que se estaba cargando en esa pestaña **se perdió**:
-  recargar y volver a cargarlo. No hay merge.
-- La convención operativa es **no trabajar los dos sobre la misma obra al mismo
-  tiempo**. Obras distintas no chocan (está probado: ver CA-5).
-- Cuando se agregue login, este protocolo se revisa entero.
+La usa una sola persona, que puede tener más de un dispositivo o pestaña
+abiertos a la vez. No hay login todavía.
+
+- Los cambios de otra pestaña/dispositivo **no aparecen solos**: hay que
+  recargar para verlos.
+- No hay banner de conflicto: un choque de guardado se resuelve solo (ver §4).
+  El único costo real es si el mismo registro se edita distinto en dos
+  pestañas casi al mismo tiempo — ahí gana el del server, sin avisar. Es un
+  trade-off aceptado, no un bug.
+- Si en algún momento pasa a usarla más de una persona, este protocolo entero
+  se revisa (probablemente haya que volver a algún tipo de aviso).
 
 ## 6. Dependencias
 
@@ -87,6 +93,12 @@ trae de fábrica (por ejemplo, `--env-file` reemplaza a `dotenv`).
 No hay migraciones: la base arranca limpia y la tabla se crea sola. Si alguna
 tarea implicara un `DROP`, `DELETE` o `ALTER` destructivo sobre datos
 existentes: **frenar y pedir OK explícito**.
+
+Mismo cuidado con `data/` a nivel de shell: antes de borrar o limpiar esa
+carpeta en la raíz del repo, confirmar que no hay un `npm run dev` real
+corriendo contra esa ruta (`lsof -iTCP -sTCP:LISTEN | grep node`). Ya pasó una
+vez que una limpieza de datos de prueba se llevó puesta la base real del
+usuario (ver PROGRESS.md, 2026-08-06). No hay backup automático todavía.
 
 ## 8. Antes de dar algo por terminado
 

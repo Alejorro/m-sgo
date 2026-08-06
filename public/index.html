@@ -98,8 +98,11 @@
       arrancar, sirve las lecturas desde ese cache y encola las escrituras con
       un debounce de 400 ms. Por eso la lógica de negocio de este archivo y de
       app.js no cambió. Cada documento lleva una versión: si otro dispositivo
-      escribió primero, el server rechaza el guardado y la app avisa que hay
-      que recargar, en vez de pisar datos en silencio.
+      (u otra pestaña) escribió primero, el server rechaza el guardado y
+      `sgoStore` lo resuelve solo —trae la versión fresca, la combina con el
+      cambio local (`registrarResolutor`, cerca de `globalCatalog`) y
+      reintenta— sin interrumpir al usuario. Pensado para un usuario único
+      que puede tener más de un dispositivo abierto a la vez.
 -->
 <style>
   :root{
@@ -141,16 +144,6 @@
 <body>
 
 <div id="toast-area"></div>
-
-<!-- Otro dispositivo escribió primero: la app queda en solo-lectura hasta recargar.
-     Nunca se pisan datos en silencio. -->
-<div id="sync-conflict-banner" class="alert alert-danger rounded-0 border-0 mb-0 d-flex align-items-center justify-content-between" style="display:none;" role="alert">
-  <span><i class="bi bi-exclamation-triangle-fill"></i>
-    <strong>Otro dispositivo modificó estos datos.</strong>
-    Tus cambios sin guardar no se enviaron. Recargá la página para ver la versión actual.</span>
-  <button class="btn btn-sm btn-light ms-3 text-nowrap" onclick="location.reload()">
-    <i class="bi bi-arrow-clockwise"></i> Recargar</button>
-</div>
 
 <!-- No se pudo hidratar desde el server: la app no arranca, para no aparentar
      que los datos se perdieron. -->

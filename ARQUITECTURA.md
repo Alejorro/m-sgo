@@ -106,7 +106,11 @@ igual ante la pregunta del browser.
 
 ---
 
-## 3. Concurrencia optimista
+## 3. Concurrencia optimista, resuelta en silencio
+
+SGO lo usa una sola persona, que puede tener más de un dispositivo o pestaña
+abiertos a la vez. No hay banner ni pantalla de "recargá": un choque se
+resuelve solo, sin interrumpir a nadie.
 
 Cada documento tiene una `version` que arranca en 1 y sube de a uno. Quien
 escribe declara qué versión creía estar editando:
@@ -117,51 +121,52 @@ WHERE key = ? AND version = ?
 ```
 
 Si no afecta ninguna fila, alguien escribió primero → `409` con el documento
-actual en el cuerpo.
+actual en el cuerpo. `version: 0` en un `PUT` significa "crear si no existe".
 
-`version: 0` en un `PUT` significa "crear si no existe".
+### Qué pasa en el front
 
-### Qué ve el usuario
+`sgoStore` (`public/storage.js`) nunca bloquea. Ante un `409`:
 
-Ante un `409`, `sgoStore` queda **bloqueado**: no manda más escrituras y muestra
-un cartel rojo *"Otro dispositivo modificó estos datos. Recargá la página"*. Se
-pierden los cambios sin confirmar, pero **no se pisa nada en silencio**, que es
-el punto.
+1. Busca si hay un **resolutor** registrado para esa clave
+   (`sgoStore.registrarResolutor`, ver `public/app.js`).
+2. Si lo hay, combina el cambio local con la versión fresca del server. Si no,
+   el cambio local gana tal cual (se reintenta con la versión correcta).
+3. Reintenta el guardado. Hasta 3 vueltas; si se agotan, esa clave queda para
+   el próximo guardado real (nada insiste ni avisa).
 
-Aplica igual para documentos de obra y para el catálogo global, **y también
-para una carrera de creación** (dos cargas casi simultáneas —dos pestañas, o el
-propio browser precargando la URL— contra una base recién vacía, donde ambas
-intentan crear el registro de obras/catálogo con `version: 0` y una pierde). No
-hay fusión automática ni recarga automática en ningún caso (ver PROGRESS.md,
-"auto-reload en carrera de creación: probado y revertido").
+Tres resolutores registrados, todos reusando mecanismos existentes o triviales
+—nada de lógica de negocio nueva, `recalcTodo()` sigue recalculando todo
+después de cualquier merge:
+
+| Clave | Resolutor |
+|---|---|
+| `sgo_obras_v1` (registro de obras) | Unión de `obras` por `id`; la obra activa se mantiene si sigue existiendo |
+| `sgo_global_v1` (catálogo global) | El merge idempotente por nombre/tipo que ya usaba la migración vieja (`mergeProveedoresYRubros`) |
+| `obra_db_v1__*` (documento de obra) | Unión por `id` de `comprobantes`/`pagos`, por `rubroId` de `presupuestos` |
+
+**Límite conocido, a propósito:** el merge es por unión de registros nuevos, no
+por campo. Si el mismo comprobante (mismo `id`) se edita distinto en dos
+pestañas casi al mismo tiempo, gana la versión del server — el cambio de la
+otra pestaña se pierde en silencio. Es el trade-off aceptado al priorizar
+"silencioso" sobre "avisar": para que nunca se pierda nada hay que volver a
+interrumpir al usuario, que es exactamente lo que se sacó.
 
 ### El batch es transaccional
 
 `db.save()` escribe dos documentos que tienen que quedar consistentes entre sí.
 `POST /api/docs/batch` los aplica en una transacción de SQLite: si alguno choca,
-**ninguno** se escribe y se devuelve `409` con la lista de conflictos.
+**ninguno** se escribe y se devuelve `409` con la lista de conflictos —el front
+resuelve cada uno y reintenta el lote entero.
 
 ### El catálogo global: el punto caliente
 
 `db.save()` reescribe `sgo_global_v1` en **cada** acción, aunque el catálogo no
-haya cambiado. Sin mitigación, dos personas trabajando en obras distintas
+haya cambiado. Sin mitigación, dos pestañas trabajando en obras distintas
 chocarían todo el tiempo sin haber tocado un proveedor.
 
 La mitigación está en `sgoStore.setItem`: si el string nuevo es idéntico al
-último persistido, **no se encola nada**. Barato y suficiente.
-
-**Comportamiento aceptado (no es bug):** si dos personas dan de alta un proveedor
-dentro de la misma ventana de ~400 ms, una va a ver "recargá". Es raro y es el
-comportamiento correcto.
-
-### Límite conocido
-
-Si el server aplica un batch pero la respuesta se pierde en la red, el reintento
-manda la misma versión esperada y recibe un `409` que en realidad no es un
-conflicto real: el usuario ve "recargá" y al recargar encuentra sus datos ya
-guardados. Es la contrapartida estándar de la concurrencia optimista sin claves
-de idempotencia. No se resolvió porque el costo supera el beneficio a esta
-escala.
+último persistido, **no se encola nada**. Barato y suficiente, y además el
+resolutor del catálogo cubre el caso en que sí choca de verdad.
 
 ---
 
@@ -206,8 +211,9 @@ diseño de concurrencia molesta en la práctica.
 | `POST /api/docs/batch` transaccional | Dos `PUT` sueltos | Pueden dejar el catálogo guardado y la obra no |
 | Guardado explícito + debounce | `sendBeacon` en `beforeunload` | Límite de 64 KB y no puede leer el `409` → pisadas silenciosas |
 | Fastify | Express | Estático oficial, `pino` de fábrica y validación de schema incluidos |
-| SQLite documental | Postgres relacional | Dos usuarios, un archivo, backup = copiar. Lo relacional obligaba a rehacer el front |
-| Sin polling ni websockets | Push de cambios | Con dos usuarios y "recargá" como resolución, agrega estado sin ganancia clara |
+| SQLite documental | Postgres relacional | Usuario único, un archivo, backup = copiar. Lo relacional obligaba a rehacer el front |
+| Sin polling ni websockets | Push de cambios | Usuario único, cambios ajenos se ven al recargar; agrega estado sin ganancia clara |
+| Merge por unión de registros | Bloquear y avisar (banner) | Un solo usuario: mejor resolver solo que interrumpir. El costo es perder ediciones al mismo registro hechas en paralelo (raro), no altas nuevas |
 
 ---
 
