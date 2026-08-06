@@ -15,8 +15,10 @@ validateConfig();
 const store = openStore(config.dbPath);
 
 // El logger de fábrica (pino) ya emite una línea JSON por request con
-// statusCode y responseTime, que es exactamente lo que Dokploy muestra en el
-// panel de logs sin configuración extra.
+// statusCode y responseTime, que es exactamente lo que Railway muestra en el
+// panel de logs sin configuración extra (y además deja expandir el JSON
+// estructurado de cada línea, que es como se encontró el ENOTFOUND del primer
+// deploy: ver PROGRESS.md, 2026-08-06).
 const app = Fastify({
   logger: { level: config.logLevel },
   bodyLimit: config.bodyLimit,
