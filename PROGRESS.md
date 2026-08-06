@@ -4,6 +4,52 @@ Bitácora del proyecto. Lo más reciente arriba.
 
 ---
 
+## 2026-08-06 (3) — Banner "permanente": investigado en la máquina real, cero bugs de código encontrados, se blindó contra bfcache
+
+Reporte: el banner de conflicto seguía apareciendo de forma permanente, con
+evidencia de captura de pantalla. Se investigó directamente contra el
+`npm run dev` real del usuario (puerto 3000) con **Chromium visible
+(headless:false)**, no headless:
+
+1. **Servidor y archivo servido:** se confirmó por MD5 que `/storage.js` en
+   `http://127.0.0.1:3000` es byte-a-byte el mismo `public/storage.js` en
+   disco (el revert `ca5d1d4` ya estaba corriendo). La base real
+   (`data/sgo.sqlite`) tiene una sola obra, sin duplicados ni estados raros.
+2. **Carga limpia:** una pestaña nueva contra el server y la base reales,
+   navegando por las 7 pestañas de la UI, esperando 20s, y haciendo F5 real:
+   cero banner, cero escritura, en todo momento.
+3. **Pestaña "vieja" atascada:** se forzó a mano el estado `bloqueado=true`
+   (para replicar visualmente una pestaña que quedó pegada desde antes del
+   fix anterior) y se hizo un F5 real contra el server actual → el banner se
+   limpia. Screenshot antes/después tomado.
+4. **Conflicto real de punta a punta:** dos pestañas reales, un 409 genuino
+   (no simulado), y un **click físico** (`page.click`, no manipulación de
+   estado) sobre el botón "Recargar" del banner → se limpia correctamente y
+   la pestaña que perdió ve los datos de la que ganó.
+5. **bfcache:** se probó si el navegador podía estar restaurando la página
+   desde back-forward-cache (lo que congelaría el JS, banner incluido, sin
+   volver a pasar por el server) vía `goBack()`; en el Chromium de Playwright
+   no se disparó (`persisted: false`), pero es un mecanismo real del
+   navegador que **si** puede ocurrir en Chrome/Safari de verdad (gestos,
+   volver atrás, pestaña suspendida y reanudada) y dejaría el banner pegado
+   para siempre sin que el código tenga ningún bug.
+
+**No se encontró ningún bug de código en `ca5d1d4`.** La explicación más
+probable es que la pestaña de la captura quedó abierta durante o antes de la
+ventana del bug anterior (el loop de `3ff0fef`) y nunca se recargó — el
+`bloqueado=true` es un flag en memoria de esa pestaña puntual, no algo que el
+server pueda "arreglar" del otro lado sin que esa pestaña vuelva a cargar.
+
+**Hardening agregado igual, por las dudas (bajo riesgo, cero cambio de
+comportamiento en uso normal):** `public/app.js`, en el listener
+`DOMContentLoaded`, ahora también escucha `pageshow` y fuerza
+`location.reload()` si `event.persisted` es `true` (la señal estándar de que
+la página se restauró desde bfcache en vez de cargar de cero). Verificado que
+no dispara en carga normal ni al cambiar de pestaña interna, y que CA-4
+(conflicto real + click físico en "Recargar") sigue en verde.
+
+---
+
 ## 2026-08-06 (2) — Revertido: auto-reload en carrera de creación
 
 El fix anterior (más abajo, "Fix: banner de conflicto en el arranque") agregaba

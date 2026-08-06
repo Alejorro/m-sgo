@@ -1937,4 +1937,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Ya no se guarda acá: un fetch disparado en beforeunload no llega. sgoStore
   // pide confirmación si quedan escrituras sin confirmar.
   window.addEventListener('beforeunload', (e) => sgoStore.beforeUnload(e));
+
+  // Si el browser restaura esta página desde bfcache (volver atrás, gestos,
+  // pestaña suspendida y reanudada), NO vuelve a correr este script: el JS
+  // queda congelado tal cual estaba, banner de conflicto incluido, sin
+  // importar qué haya cambiado en el server desde entonces. Forzar una
+  // recarga real en ese caso es la única forma de que el estado no quede
+  // pegado indefinidamente.
+  window.addEventListener('pageshow', (e) => { if (e.persisted) location.reload(); });
 });
