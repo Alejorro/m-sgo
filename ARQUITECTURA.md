@@ -131,6 +131,15 @@ el punto.
 Aplica igual para documentos de obra y para el catálogo global. No hay fusión
 automática (ver PROGRESS.md, mejoras futuras).
 
+**Excepción — carreras de creación (`version: 0`).** Si el `409` es sobre algo
+que se estaba **creando** (no editando), no es un pisado: significa que otra
+carga de la app —dos pestañas, o el propio browser precargando la URL— ya creó
+ese mismo documento primero (típico contra una base recién vacía, donde el
+arranque crea el registro de obras y el catálogo). Ahí no hay banner ni bloqueo:
+`sgoStore` hace un único `location.reload()` para adoptar la versión que ganó
+la carrera. Un conflicto de **edición** (`version > 0`) sigue bloqueando y
+mostrando "recargá" como antes.
+
 ### El batch es transaccional
 
 `db.save()` escribe dos documentos que tienen que quedar consistentes entre sí.

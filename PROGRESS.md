@@ -4,6 +4,55 @@ Bitácora del proyecto. Lo más reciente arriba.
 
 ---
 
+## 2026-08-06 — Fix: banner de conflicto en el arranque (carrera de creación)
+
+**Síntoma reportado:** con una sola ventana abierta, al arrancar aparecía el
+banner "Otro dispositivo modificó estos datos" — y volvía a aparecer
+inmediatamente después de apretar "Recargar".
+
+**Investigación.** La hipótesis inicial (Riesgo C: `recalcTodo()` persistiendo
+solo al arrancar) ya estaba cerrada por el fix anterior — se confirmó
+exhaustivamente que un boot normal, con una sola instancia, no dispara ningún
+`PUT`/`POST`: se verificó leyendo el código completo (los 19 sitios que llaman
+`db.save()` son todos acciones de usuario, ninguno corre en el arranque), con
+un harness headless (Node `vm`) replicando el `DOMContentLoaded` real, y con
+**Chromium real vía Playwright** — incluida una corrida contra la base de datos
+real que había quedado en `data/sgo.sqlite`, con dos obras y datos de ejemplo
+cargados. En los tres casos: cero escrituras en el arranque, cero banner.
+
+**Causa raíz encontrada (con Chromium real, dos pestañas):** contra una base
+**recién vacía** (primer uso), el arranque crea el registro de obras y el
+catálogo con `version: 0` (crear-si-no-existe). Si dos cargas casi
+simultáneas de la app pegan contra esa base vacía —dos pestañas, o el propio
+Chrome precargando la URL al escribirla en la barra (prerendering del
+omnibox)— ambas intentan crear los mismos documentos. Gana una; la otra recibe
+un `409` **real** del server y queda bloqueada con el banner, aunque no había
+ningún dato del usuario en juego: perdió una carrera de inicialización, no un
+pisado de edición. Esto explica el "una sola ventana visible" del reporte: la
+pestaña perdedora nunca tuvo datos propios que perder.
+
+**Fix** (`public/storage.js`): en `enviarLote`, si TODO lo que chocó en el
+`409` se estaba intentando **crear** (`version: 0` en el intento local, no
+editar), es una carrera de creación, no un conflicto de datos. En ese caso no
+se bloquea la app ni se muestra el banner: se hace **un** `location.reload()`
+para adoptar la versión que ya ganó la carrera (con una guarda en
+`sessionStorage` para no loopear si, por lo que sea, se repitiera). Un
+conflicto real de EDICIÓN (`version > 0`) sigue tratándose exactamente igual
+que antes: bloquea y muestra "recargá", sin fusión automática — eso no cambió.
+
+**Verificado con Chromium real (Playwright), todo en verde:**
+- CA-FIX-1: una instancia, base ya cargada, arranque → cero PUT/batch, cero
+  409, cero banner.
+- CA-FIX-2: recargar 6 veces seguidas → el banner nunca aparece.
+- CA-FIX-3: CA-4 original intacto — dos instancias sobre la misma obra, la
+  segunda (versión vieja) sigue bloqueándose correctamente.
+- Repetido CA-5 (obras distintas, cero conflictos de catálogo) → sigue en
+  verde.
+- La carrera de creación original (dos pestañas contra base vacía) → antes del
+  fix, una quedaba bloqueada; después del fix, ninguna.
+
+---
+
 ## 2026-08-05 — Migración de localStorage a Node + Fastify + SQLite
 
 Se convirtió SGO de app estática con estado en `localStorage` a app
