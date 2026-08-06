@@ -99,5 +99,13 @@ Borrar `data/sgo.sqlite*` y levantar de nuevo: la app arranca con base limpia.
 
 ## Deploy
 
-Todavía no configurado. Va en la fase siguiente (Docker → Dokploy, destino
-`sgo.alejorro.dev`). Ver [PROGRESS.md](PROGRESS.md).
+Todavía no configurado (el repo no está conectado a Railway todavía). Va en
+la fase siguiente: Railway (PaaS) — conectar el repo de GitHub y cada push a
+`main` deploya. Railway buildea, corre el healthcheck (`GET /health`) y recién
+ahí corta el tráfico a la versión nueva; si el build o el healthcheck fallan,
+la versión anterior sigue sirviendo. Ver [PROGRESS.md](PROGRESS.md).
+
+La base SQLite vive en un **Volume persistente de Railway** montado en
+`/data` (`SGO_DB_PATH=/data/sgo.sqlite`). El backup **no** es automático en
+Railway: se configura aparte (todavía no configurado; ver sección
+[Backup](#backup) arriba para el mecanismo manual mientras tanto).

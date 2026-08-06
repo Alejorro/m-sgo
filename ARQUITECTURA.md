@@ -217,7 +217,27 @@ diseño de concurrencia molesta en la práctica.
 
 ---
 
-## 7. Límites actuales
+## 7. Deploy: Railway + Volume persistente
+
+El runtime de producción es Railway (PaaS): push a `main` dispara build y
+deploy. Railway corre el healthcheck (`GET /health`) antes de cortar tráfico
+a la versión nueva; si el build o el healthcheck fallan, la versión anterior
+sigue sirviendo sin interrupción.
+
+La base SQLite necesita vivir en un **Volume persistente de Railway**
+montado en `/data` (`SGO_DB_PATH=/data/sgo.sqlite`). Sin el volume, cada
+deploy levanta un filesystem nuevo y la data se pierde.
+
+**Gotcha conocido, sin resolver todavía (fase de deploy):** el Volume de
+Railway se monta como `root`, pero el contenedor corre como usuario `node` →
+sin ajustar los permisos de escritura sobre el punto de montaje, SQLite falla
+con "readonly database" en el primer intento de escritura. Queda pendiente
+para la fase de configuración de Railway; no se resuelve en esta etapa (esta
+sección es solo documentación).
+
+---
+
+## 8. Límites actuales
 
 - **Sin autenticación.** La URL no está listada y nada más. Es lo próximo.
 - **Los cambios de otro dispositivo no llegan solos:** se ven al recargar.

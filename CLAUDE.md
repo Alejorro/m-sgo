@@ -100,7 +100,24 @@ corriendo contra esa ruta (`lsof -iTCP -sTCP:LISTEN | grep node`). Ya pasó una
 vez que una limpieza de datos de prueba se llevó puesta la base real del
 usuario (ver PROGRESS.md, 2026-08-06). No hay backup automático todavía.
 
-## 8. Antes de dar algo por terminado
+## 8. Deploy: Railway
+
+El molde de deploy para SGO y las demás mini-apps es Railway (PaaS en la
+nube). Push a `main` → Railway buildea la imagen → corre el healthcheck
+contra `/health` → recién ahí corta el tráfico a la versión nueva. Railway
+mantiene la versión anterior sirviendo mientras tanto; si el build o el
+healthcheck fallan, la versión nueva no sale y la anterior sigue en pie.
+
+La base SQLite vive en un **Volume persistente de Railway montado en
+`/data`** (`SGO_DB_PATH=/data/sgo.sqlite`). **Sin el volume, la data se borra
+en cada deploy.** El backup **no** es automático en Railway: se configura
+aparte (ver §7, todavía pendiente).
+
+Esto es solo el contrato de deploy; la configuración real de Railway
+(Dockerfile, volume, variables de entorno) es una fase aparte — ver
+PROGRESS.md.
+
+## 9. Antes de dar algo por terminado
 
 - `npm run dev` levanta y `curl localhost:3000/health` devuelve `200`.
 - Ningún monto ni fórmula cambió de valor.

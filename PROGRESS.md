@@ -4,6 +4,20 @@ Bitácora del proyecto. Lo más reciente arriba.
 
 ---
 
+## 2026-08-06 (5) — Target de deploy cambiado de Dokploy/MacBook a Railway (solo docs)
+
+Target de deploy cambiado de Dokploy/MacBook a Railway. DB sigue en SQLite
+(Railway no da backups automáticos de Postgres, así que Postgres no compra
+ventaja; el modelo KV es portable si alguna app futura lo pide). Pendiente
+para fase de deploy: Volume persistente, permisos del volume, backup a
+bucket externo, Dockerfile/config Railway.
+
+Esta entrada es solo documentación (`README.md`, `ARQUITECTURA.md`,
+`CLAUDE.md`, este archivo): no se tocó código ni el Dockerfile. El repo
+todavía no está conectado a Railway.
+
+---
+
 ## 2026-08-06 (4) — Se sacó el banner de conflicto: usuario único, autorresolución silenciosa
 
 Decisión: la app la va a usar una sola persona (posiblemente desde más de un
@@ -291,8 +305,12 @@ pintan bien.
 
 **Fase de infra: deploy.** Dockerfile multi-stage (`better-sqlite3` es módulo
 nativo: necesita toolchain al instalar, no en runtime; usar `node:24-slim`, no
-Alpine), volumen persistente en `/data` con `SGO_DB_PATH=/data/sgo.sqlite`,
-healthcheck contra `/health`, y conectar el repo en Dokploy.
+Alpine), Volume persistente de Railway en `/data` con
+`SGO_DB_PATH=/data/sgo.sqlite`, healthcheck contra `/health`, y conectar el
+repo en Railway. Falta resolver los permisos de escritura del Volume (se
+monta como `root`, el contenedor corre como `node` — ver ARQUITECTURA.md §7)
+y configurar backup a un bucket externo, ya que Railway no lo da
+automático.
 
 Nota para esa fase: `npm install` avisa que el script de build de
 `better-sqlite3` queda bloqueado por la política de scripts de npm. En local
