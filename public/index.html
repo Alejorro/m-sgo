@@ -152,12 +152,14 @@
   /* Pantalla de acceso (ver el bloque #gate más abajo). */
   body.gate-locked{overflow:hidden;}
   #gate{position:fixed;inset:0;z-index:3000;background:var(--sgo-bg);display:flex;align-items:center;justify-content:center;padding:1rem;}
-  #gate .gate-box{width:100%;max-width:300px;text-align:center;}
-  #gate .gate-logo{font-size:3.25rem;font-weight:700;letter-spacing:.14em;line-height:1;color:#0d6efd;}
-  #gate .gate-sub{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:#6c757d;margin:.4rem 0 1.6rem;}
-  #gate input{text-align:center;letter-spacing:.3em;}
-  #gate input::placeholder{letter-spacing:normal;}
-  #gate .gate-error{font-size:.8rem;color:#dc3545;min-height:1.15rem;margin:.45rem 0 .35rem;}
+  /* margin-bottom sube el bloque un poco sobre el centro geométrico: centrado
+     óptico. No se usa transform porque el shake de clave incorrecta lo pisa. */
+  #gate .gate-box{width:100%;max-width:230px;text-align:center;margin-bottom:5vh;}
+  #gate .gate-logo{font-size:1.9rem;font-weight:600;letter-spacing:.16em;line-height:1;color:#0d6efd;}
+  #gate .gate-sub{font-size:.62rem;text-transform:uppercase;letter-spacing:.05em;color:#adb5bd;margin:.35rem 0 1.1rem;}
+  #gate input{text-align:center;letter-spacing:.25em;font-size:.85rem;}
+  #gate input::placeholder{letter-spacing:normal;font-size:.82rem;}
+  #gate .gate-error{font-size:.72rem;color:#dc3545;min-height:1.05rem;margin:.4rem 0 .3rem;}
   .gate-shake{animation:gate-shake .3s;}
   @keyframes gate-shake{
     25%{transform:translateX(-7px);} 50%{transform:translateX(7px);} 75%{transform:translateX(-4px);}
@@ -175,10 +177,10 @@
   <form class="gate-box" onsubmit="return gateSubmit(event)">
     <div class="gate-logo">SGO</div>
     <div class="gate-sub">Control de Gastos de Obra</div>
-    <input type="password" class="form-control form-control-lg" id="gate-pass"
+    <input type="password" class="form-control form-control-sm" id="gate-pass"
            inputmode="numeric" autocomplete="off" placeholder="Contraseña" autofocus>
     <div class="gate-error" id="gate-error"></div>
-    <button class="btn btn-primary w-100" type="submit">Entrar</button>
+    <button class="btn btn-primary btn-sm w-100" type="submit">Entrar</button>
   </form>
 </div>
 
