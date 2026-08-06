@@ -4,7 +4,47 @@ Bitácora del proyecto. Lo más reciente arriba.
 
 ---
 
-## 2026-08-06 — Fix: banner de conflicto en el arranque (carrera de creación)
+## 2026-08-06 (2) — Revertido: auto-reload en carrera de creación
+
+El fix anterior (más abajo, "Fix: banner de conflicto en el arranque") agregaba
+un `location.reload()` automático cuando el 409 era por una carrera de
+creación (`version: 0`), para no mostrarle el banner a la pestaña que perdía
+esa carrera. En la máquina real apareció evidencia de un **loop de recargas**:
+con una sola pestaña y base con datos ya cargados, el Network mostraba
+`GET /api/docs` repitiéndose solo, sin ningún `PUT`/`POST`/`409` de por medio.
+
+Repasando el código, esa secuencia es contradictoria con la lógica tal como
+está escrita: el `location.reload()` solo puede dispararse dentro del
+`catch` de `flush()`, y ese `catch` solo se alcanza si `enviarLote()` recibió
+un `409` real de un `POST /api/docs/batch` — o sea, tendría que haber un
+`POST` y un `409` en la red antes de cada recarga, y el reporte decía que no
+los había. No se pudo reconciliar esa observación con una lectura línea por
+línea del código, así que en vez de seguir buscando una causa que el código no
+sostiene, se aplicó la salida seguridad que el pedido ya autorizaba: **se quitó
+el auto-reload por completo**. Una carrera de creación ahora se trata
+exactamente igual que cualquier otro conflicto: banner rojo, sin bloqueo
+silencioso, sin ninguna recarga automática. `public/storage.js` quedó
+byte-a-byte igual al de antes del fix de carrera, salvo un texto de log.
+
+**Verificado con Chromium real (Playwright):**
+- Una pestaña, base con datos, observada **150 segundos** mirando la red en
+  vivo: 1 sola navegación (la carga inicial), 1 solo `GET /api/docs`, cero
+  escrituras, cero banner. Ninguna actividad no solicitada.
+- CA-4 (dos instancias, misma obra, conflicto real) intacto: la que escribe
+  primero sigue libre, la de versión vieja sigue bloqueándose.
+- Carrera de creación (base vacía, dos pestañas simultáneas): una de las dos
+  pierde y muestra el banner, pero **ninguna de las dos navega de más** —
+  exactamente 1 navegación por pestaña (la carga inicial), nada de loop.
+
+No se llegó a identificar la causa exacta de lo observado en la máquina real,
+más allá de que el código, tal como estaba, no debería producirla salvo un 409
+real de por medio. Si el síntoma reaparece con este cambio (que ya no tiene
+ningún camino de recarga automática salvo el botón manual del banner), no
+puede venir de esta lógica.
+
+---
+
+## 2026-08-06 (1) — Fix: banner de conflicto en el arranque (carrera de creación)
 
 **Síntoma reportado:** con una sola ventana abierta, al arrancar aparecía el
 banner "Otro dispositivo modificó estos datos" — y volvía a aparecer

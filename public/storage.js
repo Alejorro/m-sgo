@@ -56,18 +56,6 @@ const sgoStore = (function () {
     }
   }
 
-  /**
-   * Un 409 donde TODO lo que intentábamos escribir era una creación
-   * (version:0) es distinto de un pisado real: no existía nada nuestro para
-   * perder, solo perdimos la carrera de quién creaba el documento primero
-   * (típico en el arranque contra una base recién vacía, con dos cargas casi
-   * simultáneas — dos pestañas, o el propio browser precargando la URL).
-   * No es un conflicto de edición: no hay nada que fusionar ni que avisar.
-   */
-  class CarreraDeCreacionError extends Error {
-    constructor() { super('creation_race'); this.name = 'CarreraDeCreacionError'; }
-  }
-
   /* ===================== ESTADO / OBSERVADORES ===================== */
 
   function setEstado(nuevo) {
@@ -133,15 +121,7 @@ const sgoStore = (function () {
 
     if (res.status === 409) {
       const body = await res.json().catch(() => ({}));
-      const conflicts = body.conflicts || [];
-      // ¿Todo lo que chocó lo estábamos CREANDO (version:0), no editando?
-      // Entonces alguien más ya lo creó primero: no es un pisado de datos.
-      const soloCreaciones = conflicts.length > 0 && conflicts.every((c) => {
-        const intentado = docs.find((d) => d.key === c.key);
-        return intentado && intentado.version === 0;
-      });
-      if (soloCreaciones) throw new CarreraDeCreacionError();
-      throw new ConflictoError(conflicts);
+      throw new ConflictoError(body.conflicts);
     }
     if (!res.ok) {
       const detalle = await res.text().catch(() => '');
@@ -180,25 +160,9 @@ const sgoStore = (function () {
       ultimoGuardado = new Date();
       setEstado(pendientes.size || borrados.size ? 'saving' : 'saved');
     } catch (err) {
-      if (err instanceof CarreraDeCreacionError) {
-        // No hay nada del usuario para perder: perdimos la carrera de quién
-        // creaba el registro/catálogo iniciales, no un pisado de datos. Un
-        // solo recargo alcanza para adoptar lo que ya quedó creado. La guarda
-        // de sessionStorage evita un loop si, por lo que sea, se repitiera.
-        const yaRecargo = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('sgo_recargo_carrera_creacion');
-        console.warn('Carrera de creación al arrancar (dos cargas casi simultáneas contra una base vacía): recargando para adoptar la versión ya creada.');
-        if (!yaRecargo && typeof location !== 'undefined') {
-          try { sessionStorage.setItem('sgo_recargo_carrera_creacion', '1'); } catch (e) { /* ignorar */ }
-          location.reload();
-          return;
-        }
-        // Ya se reintentó una vez sin éxito: tratarlo como un conflicto real
-        // en vez de arriesgar un loop de recargas.
+      if (err instanceof ConflictoError) {
         bloqueado = true;
-        setEstado('conflict');
-      } else if (err instanceof ConflictoError) {
-        bloqueado = true;
-        console.warn('Conflicto de versión: otro dispositivo escribió primero.', err.conflicts);
+        console.warn('Conflicto de versión: otro dispositivo escribió primero (o ganó una carrera de creación contra una base vacía).', err.conflicts);
         setEstado('conflict');
       } else {
         // Falla de red tras agotar los reintentos: se reencola y se prueba de nuevo.
