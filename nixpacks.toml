@@ -1,0 +1,13 @@
+# Build de Railway. Sin módulos nativos ya no hace falta Dockerfile: Nixpacks
+# detecta Node por package.json y arma la imagen solo.
+#
+# Lo único que hay que agregarle es el cliente de Postgres, para que exista el
+# binario `pg_dump` que usa el backup a R2 (src/backup.js). El `"..."` conserva
+# los paquetes que Nixpacks pone por default (Node, npm).
+#
+# OJO con la versión: pg_dump se niega a volcar una base de un server MÁS NUEVO
+# que él. Si Railway provisiona un Postgres más nuevo que el de acá, subir este
+# número. Mientras tanto no es urgente: el backup cae solo al volcado JSON de
+# la tabla `docs` (ver src/backup.js) y avisa en el log.
+[phases.setup]
+nixPkgs = ["...", "postgresql_17"]

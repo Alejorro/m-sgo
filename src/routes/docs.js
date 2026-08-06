@@ -48,7 +48,7 @@ export default async function docsRoutes(fastify, opts) {
      escanearUsoGlobal() recorre todas las obras en cada render. Son ≤7
      documentos (registro + catálogo + hasta 5 obras), del orden de KB. */
   fastify.get('/docs', async () => {
-    return { docs: store.getAll() };
+    return { docs: await store.getAll() };
   });
 
   /* ---------- lectura suelta ---------- */
@@ -56,7 +56,7 @@ export default async function docsRoutes(fastify, opts) {
     const { key } = request.params;
     if (!isAllowedKey(key)) return badKey(reply, key);
 
-    const doc = store.get(key);
+    const doc = await store.get(key);
     if (!doc) return reply.code(404).send({ error: 'not_found', key });
     return doc;
   });
@@ -77,7 +77,7 @@ export default async function docsRoutes(fastify, opts) {
       return reply.code(400).send({ error: 'invalid_body', message: '`version` debe ser un entero >= 0' });
     }
 
-    const res = store.put(key, body.data, body.version);
+    const res = await store.put(key, body.data, body.version);
     if (!res.ok) {
       request.log.warn(
         { key, expected: res.expected, actual: res.current.version },
@@ -100,7 +100,7 @@ export default async function docsRoutes(fastify, opts) {
         .send({ error: 'invalid_version', message: 'Falta el query param `version` (entero >= 0)' });
     }
 
-    const res = store.remove(key, version);
+    const res = await store.remove(key, version);
     if (res.notFound) return reply.code(404).send({ error: 'not_found', key });
     if (!res.ok) {
       request.log.warn({ key, expected: version, actual: res.current.version }, 'version_conflict');
@@ -139,7 +139,7 @@ export default async function docsRoutes(fastify, opts) {
     }
 
     try {
-      const results = store.putMany(docs);
+      const results = await store.putMany(docs);
       return { results };
     } catch (err) {
       if (err instanceof ConflictError) {

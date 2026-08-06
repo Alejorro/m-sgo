@@ -1,6 +1,9 @@
 /**
- * Healthcheck. Confirma que el proceso responde y que SQLite contesta.
- * No toca datos: un `SELECT 1` sobre better-sqlite3 es sincrónico y sub-milisegundo.
+ * Healthcheck. Confirma que el proceso responde y que Postgres contesta.
+ * No toca datos: un `SELECT 1` no lee ni escribe ninguna tabla.
+ *
+ * Es lo que mira Railway antes de mandarle tráfico a un deploy nuevo: si acá
+ * sale 503, la versión nueva no se promociona y sigue sirviendo la anterior.
  */
 import { config } from '../config.js';
 
@@ -10,7 +13,7 @@ export default async function healthRoutes(fastify, opts) {
   fastify.get('/health', async (request, reply) => {
     let dbOk = false;
     try {
-      dbOk = store.ping();
+      dbOk = await store.ping();
     } catch (err) {
       request.log.error({ err }, 'healthcheck: la base no responde');
     }

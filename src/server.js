@@ -7,12 +7,11 @@ import fastifyStatic from '@fastify/static';
 
 import { config, validateConfig } from './config.js';
 import { openStore } from './db.js';
+import { crearBackup } from './backup.js';
 import healthRoutes from './routes/health.js';
 import docsRoutes from './routes/docs.js';
 
 validateConfig();
-
-const store = openStore(config.dbPath);
 
 // El logger de fábrica (pino) ya emite una línea JSON por request con
 // statusCode y responseTime, que es exactamente lo que Railway muestra en el
@@ -23,6 +22,14 @@ const app = Fastify({
   logger: { level: config.logLevel },
   bodyLimit: config.bodyLimit,
 });
+
+let store;
+try {
+  store = await openStore(config.databaseUrl, { log: app.log });
+} catch (err) {
+  app.log.error({ err }, 'no se pudo conectar a Postgres');
+  process.exit(1);
+}
 
 await app.register(fastifyStatic, {
   root: config.publicDir,
@@ -36,11 +43,17 @@ await app.register(fastifyStatic, {
 await app.register(healthRoutes, { store });
 await app.register(docsRoutes, { store, prefix: '/api' });
 
+const backup = crearBackup({ config, store, log: app.log });
+
+let cerrando = false;
 async function shutdown(signal) {
+  if (cerrando) return;
+  cerrando = true;
   app.log.info({ signal }, 'cerrando');
   try {
+    backup.detener();
     await app.close();
-    store.close();
+    await store.close();
     process.exit(0);
   } catch (err) {
     app.log.error({ err }, 'error al cerrar');
@@ -53,7 +66,8 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 try {
   await app.listen({ port: config.port, host: config.host });
-  app.log.info({ db: config.dbPath }, 'base de datos abierta');
+  app.log.info({ host: config.host, port: config.port }, 'base de datos conectada');
+  backup.iniciar();
 } catch (err) {
   app.log.error({ err }, 'no se pudo levantar el server');
   process.exit(1);

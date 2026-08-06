@@ -4,7 +4,7 @@
 
 SGO era una app 100% client-side con todo el estado en `localStorage`. Se le
 puso un backend que sirve el mismo front y persiste **los mismos blobs JSON** en
-SQLite. Se reemplazó únicamente la capa de storage: la lógica de negocio del
+Postgres. Se reemplazó únicamente la capa de storage: la lógica de negocio del
 front no cambió.
 
 ---
@@ -30,18 +30,49 @@ Son exactamente las que usaba `localStorage`, sin traducir:
 
 ### Esquema
 
+Una sola tabla, creada con `CREATE TABLE IF NOT EXISTS` al arrancar. No hay
+migraciones ni herramienta de migraciones: si el esquema alguna vez cambia, se
+discute aparte.
+
 ```sql
-CREATE TABLE docs (
+CREATE TABLE IF NOT EXISTS docs (
   key        TEXT PRIMARY KEY,
-  json       TEXT NOT NULL,
+  json       JSONB NOT NULL,
   version    INTEGER NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 
-PRAGMAs: `journal_mode = WAL` (una lectura no bloquea una escritura),
-`synchronous = NORMAL`, `foreign_keys = ON`.
+`JSONB` y no `TEXT`: `jsonb` valida que lo guardado sea JSON de verdad, y el
+driver lo devuelve ya parseado (una vuelta menos de `JSON.parse`). Sigue siendo
+opaco para el server, que no mira adentro.
+
+**Sobre la plata:** `jsonb` guarda los números como `numeric`, de precisión
+decimal arbitraria, así que un monto va y vuelve **exacto**. Verificado con
+los casos feos (`0.1`, `0.30000000000000004`, `1e-7`, `9007199254740991`, el
+doble máximo): todos vuelven `Object.is`-idénticos, también después de un
+`pg_dump` + `pg_restore`.
+
+**Lo único que sí cambia es el orden de las claves:** `jsonb` lo normaliza
+(no guarda el orden de inserción). Ningún valor se altera y nada de la app
+depende del orden — la comparación de `sgoStore.setItem` que evita reencolar
+el catálogo compara el cache local contra un `JSON.stringify` local, ambos con
+el mismo orden, no contra el string del server.
+
+### Conexión
+
+Pool de `pg` (`max: 5`), `DATABASE_URL` por entorno. El SSL se decide mirando
+el host: dentro de Railway se habla por la red privada (`*.railway.internal`),
+que no ofrece TLS y donde pedirlo hace fallar la conexión; contra cualquier
+host externo va TLS sin verificar la cadena (certificado autofirmado, sin CA
+con qué validarlo).
+
+La primera conexión reintenta 6 veces cada 2 s: en un deploy, Railway levanta
+la app y la base en paralelo y es normal que los primeros intentos den
+`ECONNREFUSED`. Si aun así no conecta, el proceso muere y el healthcheck
+falla — que es exactamente lo que tiene que pasar para que Railway no
+promocione ese deploy.
 
 ### Whitelist de claves
 
@@ -154,7 +185,8 @@ interrumpir al usuario, que es exactamente lo que se sacó.
 ### El batch es transaccional
 
 `db.save()` escribe dos documentos que tienen que quedar consistentes entre sí.
-`POST /api/docs/batch` los aplica en una transacción de SQLite: si alguno choca,
+`POST /api/docs/batch` los aplica en una transacción de Postgres
+(`BEGIN` … `COMMIT`, con `ROLLBACK` si alguno choca): si alguno choca,
 **ninguno** se escribe y se devuelve `409` con la lista de conflictos —el front
 resuelve cada uno y reintenta el lote entero.
 
@@ -192,8 +224,8 @@ escrito a mano.
 ## 5. Observabilidad
 
 `GET /health` devuelve `{ status, db, uptime, version }`. Ejecuta un `SELECT 1`
-contra SQLite —sincrónico, sub-milisegundo, no toca datos— y responde `503` si la
-base no contesta.
+contra Postgres —no lee ni escribe ninguna tabla— y responde `503` si la base no
+contesta. Es lo que mira Railway antes de mandarle tráfico a un deploy nuevo.
 
 Los logs son los de `pino`, que viene con Fastify: una línea JSON por request con
 `method`, `url`, `statusCode` y `responseTime`. Los conflictos de versión se
@@ -211,29 +243,58 @@ diseño de concurrencia molesta en la práctica.
 | `POST /api/docs/batch` transaccional | Dos `PUT` sueltos | Pueden dejar el catálogo guardado y la obra no |
 | Guardado explícito + debounce | `sendBeacon` en `beforeunload` | Límite de 64 KB y no puede leer el `409` → pisadas silenciosas |
 | Fastify | Express | Estático oficial, `pino` de fábrica y validación de schema incluidos |
-| SQLite documental | Postgres relacional | Usuario único, un archivo, backup = copiar. Lo relacional obligaba a rehacer el front |
+| Postgres documental (`jsonb`) | Postgres relacional | Lo relacional obligaba a rehacer el front entero (~50 puntos de lectura/escritura + el motor de cálculo). El modelo clave→blob se mantuvo tal cual |
+| Postgres | SQLite en un volume | El volume de Railway es un punto de falla propio (se monta como `root`, el contenedor corre como `node` → "readonly database"), no se puede leer desde afuera y obliga a un solo contenedor. Postgres es un servicio aparte, con `pg_dump` para backup y sin gimnasia de permisos |
+| `pg_dump` diario a R2 | Backups de Railway | Railway no da backups automáticos de Postgres. R2 además deja las copias **fuera** del proveedor: si se pierde la cuenta de Railway, el backup sigue estando |
 | Sin polling ni websockets | Push de cambios | Usuario único, cambios ajenos se ven al recargar; agrega estado sin ganancia clara |
 | Merge por unión de registros | Bloquear y avisar (banner) | Un solo usuario: mejor resolver solo que interrumpir. El costo es perder ediciones al mismo registro hechas en paralelo (raro), no altas nuevas |
 
 ---
 
-## 7. Deploy: Railway + Volume persistente
+## 7. Deploy: Railway + Postgres
 
 El runtime de producción es Railway (PaaS): push a `main` dispara build y
 deploy. Railway corre el healthcheck (`GET /health`) antes de cortar tráfico
 a la versión nueva; si el build o el healthcheck fallan, la versión anterior
 sigue sirviendo sin interrupción.
 
-La base SQLite necesita vivir en un **Volume persistente de Railway**
-montado en `/data` (`SGO_DB_PATH=/data/sgo.sqlite`). Sin el volume, cada
-deploy levanta un filesystem nuevo y la data se pierde.
+Son **dos servicios** en un proyecto: la app y Postgres. La app recibe
+`DATABASE_URL` como **referencia** al servicio de base
+(`${{Postgres.DATABASE_URL}}`), no como URL copiada a mano: si Railway rota
+las credenciales, sigue andando.
 
-**Gotcha conocido, sin resolver todavía (fase de deploy):** el Volume de
-Railway se monta como `root`, pero el contenedor corre como usuario `node` →
-sin ajustar los permisos de escritura sobre el punto de montaje, SQLite falla
-con "readonly database" en el primer intento de escritura. Queda pendiente
-para la fase de configuración de Railway; no se resuelve en esta etapa (esta
-sección es solo documentación).
+El build es **Nixpacks**, sin Dockerfile: ya no hay módulos nativos que
+compilar. Nixpacks detecta Node por `package.json` solo; `nixpacks.toml`
+únicamente agrega el cliente de Postgres, para que exista el binario
+`pg_dump` que usa el backup. La config de deploy (healthcheck, start command,
+política de reinicio) vive en `railway.json`, versionada.
+
+### Backup a Cloudflare R2
+
+Railway **no** hace backups de Postgres. Los hace la app (`src/backup.js`):
+
+```
+  cada 24 h ──► pg_dump -Fc ──► PUT a R2 (SDK S3)  ──► poda lo que pasó 30 días
+```
+
+Reglas de diseño:
+
+- **Aislado.** Todo va envuelto en try/catch. Si falta una credencial, si
+  `pg_dump` no está, si R2 no responde: se loguea y la app sigue sirviendo
+  igual. Un backup roto nunca tumba el server ni hace fallar el healthcheck.
+- **Se apaga solo si no está configurado.** Sin las cuatro variables `R2_*`,
+  queda deshabilitado con un `warn` en el log.
+- **Fuera del proveedor.** R2 es de Cloudflare, no de Railway: si se pierde la
+  cuenta de Railway, las copias siguen estando.
+- **Plan B en JSON.** El modo de falla más probable es un desajuste de versión
+  (`pg_dump` se niega a volcar una base de un server más nuevo que él). Si el
+  `pg_dump` falla por lo que sea, se sube en cambio la tabla `docs` entera
+  serializada a JSON. Como el esquema es una sola tabla que la app recrea al
+  arrancar, ese JSON **es** el 100% de los datos. Un backup que se apaga solo
+  en silencio no sirve de nada.
+
+La primera corrida arranca 2 minutos después del boot, para no competir con el
+healthcheck del deploy.
 
 ---
 

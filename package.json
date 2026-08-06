@@ -2,7 +2,7 @@
   "name": "m-sgo",
   "version": "1.0.0",
   "private": true,
-  "description": "SGO — Sistema de Gestión de Control de Gastos de Obra. Front estático servido por Fastify + persistencia documental en SQLite.",
+  "description": "SGO — Sistema de Gestión de Control de Gastos de Obra. Front estático servido por Fastify + persistencia documental en Postgres.",
   "type": "module",
   "engines": {
     "node": ">=20.12.0"
@@ -12,8 +12,9 @@
     "start": "node src/server.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1104.0",
     "@fastify/static": "^10.1.2",
-    "better-sqlite3": "^12.4.1",
-    "fastify": "^5.6.1"
+    "fastify": "^5.6.1",
+    "pg": "^8.22.0"
   }
 }

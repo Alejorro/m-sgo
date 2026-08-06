@@ -36,6 +36,19 @@ function env(name) {
 
 const pkg = JSON.parse(readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
 
+/* El backup se activa solo si están las cuatro credenciales de R2. Sin ellas
+   la app funciona igual, con un aviso en el log: es una tarea de fondo, no un
+   requisito para servir (ver src/backup.js). */
+const r2 = {
+  accountId: env('R2_ACCOUNT_ID'),
+  accessKeyId: env('R2_ACCESS_KEY_ID'),
+  secretAccessKey: env('R2_SECRET_ACCESS_KEY'),
+  bucket: env('R2_BUCKET'),
+  prefix: env('R2_PREFIX') || 'sgo/',
+  /** Se deriva del account id; se puede pisar para apuntar a otro S3. */
+  endpoint: env('R2_ENDPOINT') || `https://${env('R2_ACCOUNT_ID')}.r2.cloudflarestorage.com`,
+};
+
 export const config = {
   rootDir,
   publicDir: path.join(rootDir, 'public'),
@@ -43,12 +56,23 @@ export const config = {
 
   port: parseInteger(env('PORT'), 3000),
   host: env('HOST') || '0.0.0.0',
-  dbPath: path.resolve(rootDir, env('SGO_DB_PATH') || './data/sgo.sqlite'),
+  databaseUrl: env('DATABASE_URL'),
   logLevel: env('LOG_LEVEL') || 'info',
   nodeEnv: env('NODE_ENV') || 'development',
 
   /** Un documento de obra con miles de comprobantes entra holgado en 5 MB. */
   bodyLimit: 5 * 1024 * 1024,
+
+  backup: {
+    r2,
+    habilitado:
+      env('BACKUP_ENABLED') !== 'false' &&
+      Boolean(r2.accountId && r2.accessKeyId && r2.secretAccessKey && r2.bucket),
+    intervaloHoras: parseInteger(env('BACKUP_INTERVAL_HOURS'), 24),
+    retencionDias: parseInteger(env('BACKUP_RETENTION_DAYS'), 30),
+    /** Margen para que la app termine de levantar antes del primer dump. */
+    demoraInicialMs: parseInteger(env('BACKUP_INITIAL_DELAY_MS'), 2 * 60 * 1000),
+  },
 };
 
 export function validateConfig(cfg = config) {
@@ -57,7 +81,19 @@ export function validateConfig(cfg = config) {
     errores.push(`PORT inválido: ${process.env.PORT}`);
   }
   if (!cfg.host) errores.push('HOST vacío');
-  if (!cfg.dbPath) errores.push('SGO_DB_PATH vacío');
+  if (!cfg.databaseUrl) {
+    errores.push(
+      'DATABASE_URL vacía. En Railway la provee el servicio de Postgres; en local, ver .env.example'
+    );
+  } else if (!/^postgres(ql)?:\/\//.test(cfg.databaseUrl)) {
+    errores.push('DATABASE_URL debe empezar con postgres:// o postgresql://');
+  }
+  if (!Number.isInteger(cfg.backup.intervaloHoras) || cfg.backup.intervaloHoras < 1) {
+    errores.push(`BACKUP_INTERVAL_HOURS inválido: ${process.env.BACKUP_INTERVAL_HOURS}`);
+  }
+  if (!Number.isInteger(cfg.backup.retencionDias) || cfg.backup.retencionDias < 1) {
+    errores.push(`BACKUP_RETENTION_DAYS inválido: ${process.env.BACKUP_RETENTION_DAYS}`);
+  }
   if (errores.length) {
     throw new Error(`Configuración inválida:\n  - ${errores.join('\n  - ')}`);
   }

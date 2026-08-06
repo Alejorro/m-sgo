@@ -4,6 +4,112 @@ Bitácora del proyecto. Lo más reciente arriba.
 
 ---
 
+## 2026-08-06 (6) — SQLite → Postgres, build Nixpacks y backup diario a R2
+
+Se cambió el motor de persistencia de SQLite a Postgres y se dejó el repo
+listo para deployar en Railway. **El front no se tocó** (`git diff public/`
+vacío): la migración es toda de la puerta del server para adentro.
+
+### Por qué
+
+La entrada anterior había decidido quedarse en SQLite razonando que Railway no
+da backups de Postgres, así que Postgres no compraba ventaja. Ese razonamiento
+se cae solo cuando el backup lo hace igual la app: si hay que escribir el
+backup a mano en los dos casos, lo que queda es comparar el resto, y ahí
+SQLite en un volume pierde — el volume se monta como `root` con el contenedor
+corriendo como `node` (el "readonly database" que quedó anotado sin resolver),
+no se puede leer la base desde afuera, y ata la app a un solo contenedor.
+
+### Backend
+
+- **`src/db.js`** — reescrito de `better-sqlite3` a `pg`. Tabla `docs` con
+  `json JSONB`, `version INTEGER`, timestamps `TIMESTAMPTZ`, creada con
+  `CREATE TABLE IF NOT EXISTS` al arrancar. Pool de `pg` (`max: 5`). El SSL se
+  decide por host: sin TLS contra `*.railway.internal` y localhost (la red
+  privada de Railway no lo ofrece), con TLS sin verificar la cadena contra
+  cualquier otro. La primera conexión reintenta 6 × 2 s, porque en un deploy
+  Railway levanta la app y la base en paralelo.
+- **Contrato de API idéntico.** Mismos endpoints, mismos códigos, mismos
+  cuerpos. Las rutas solo pasaron a `await`. El versionado optimista es el
+  mismo (`UPDATE ... WHERE key = $1 AND version = $2`, 0 filas → `409`), y el
+  batch sigue siendo todo-o-nada (`BEGIN`/`COMMIT`/`ROLLBACK`).
+- **`src/backup.js`** (nuevo) — `pg_dump -Fc` diario a Cloudflare R2 vía el SDK
+  de S3, retención 30 días. Aislado: todo en try/catch, si falla loguea y la
+  app sigue. Con plan B: si `pg_dump` no está o falla, sube la tabla `docs`
+  serializada a JSON (que es el 100% de los datos, porque el esquema es esa
+  única tabla). Un backup que se apaga solo en silencio no sirve de nada.
+- **Se sacó todo lo de SQLite:** dependencia, `SGO_DB_PATH`, volume, permisos
+  del punto de montaje, backup por copia de archivo.
+- **Build: Nixpacks, sin Dockerfile.** Ya no hay módulo nativo que compilar, así
+  que Nixpacks detecta Node solo. `nixpacks.toml` solo agrega el cliente de
+  Postgres para que exista `pg_dump`. `railway.json` fija el healthcheck en
+  `/health`, el start command y la política de reinicio.
+
+### Dependencias
+
+`better-sqlite3` afuera; entran `pg` y `@aws-sdk/client-s3` (este último solo
+para subir el backup). Ambas pedidas explícitamente en el prompt de esta
+tarea, según CLAUDE.md §6.
+
+### Verificado (contra Postgres real, no mocks)
+
+**API — 30/30.** Whitelist de claves (`400`/`404`), alta con `version: 0`,
+carrera de creación (`409` con los datos actuales en el cuerpo), versionado
+optimista (`409` sin pisar el dato), batch de altas, batch con una clave en
+conflicto → `409` **y `ROLLBACK` verificado** (la clave que sí iba tampoco se
+escribió), clave repetida y batch vacío → `400`, bootstrap `GET /api/docs`,
+borrado con versión correcta/vieja/inexistente, y bodies inválidos.
+
+**Plata — verde.** 10 montos feos (`0.1`, `0.30000000000000004`, `1e-7`,
+`9007199254740991`, `1.7976931348623157e308`, negativos, cero) escritos y
+releídos: **todos vuelven `Object.is`-idénticos**, también después de un
+`pg_dump` + `pg_restore`. `jsonb` guarda los números como `numeric`, de
+precisión decimal exacta. Lo único que cambia es el **orden de las claves**,
+que `jsonb` normaliza; ningún valor se altera y nada de la app depende del
+orden (la comparación de `sgoStore.setItem` es cache local contra stringify
+local, no contra el string del server).
+
+**Backup — 20/20**, contra un S3 falso local que habla el protocolo real
+(firma SigV4, `PutObject`, `ListObjectsV2`, `DeleteObjects`): sube un dump con
+firma `PGDMP` válida, poda exactamente los de más de 30 días, no toca nada
+fuera del prefijo, cae al volcado JSON cuando `pg_dump` no está en el `PATH`,
+y **nunca lanza** — con R2 caído devuelve `ok:false` y loguea, sin propagar.
+
+**Restauración — verde.** `pg_dump` → `createdb` → `pg_restore` en una base
+nueva: la tabla `docs` restaurada sale byte-idéntica a la de origen (`diff`
+vacío), claves, versiones y montos incluidos. Un backup que no se probó
+restaurar no es un backup.
+
+**Front real (Chromium/Playwright) — 17/17.** Contra base Postgres vacía: la
+app arranca sin errores de JS, crea el registro de obras y el catálogo, pinta
+la UI; un alta de proveedor llega a Postgres y sobrevive a un F5 (hydrate);
+dos pestañas agregando proveedores distintos a la vez generan un `409`
+genuino que **se resuelve solo y conserva los dos** proveedores, sin banner
+(§4 de CLAUDE.md sigue en pie); el indicador de guardado queda en "guardado",
+no en "sin conexión".
+
+**CA-9 (equivalencia del motor de cálculo): sin riesgo.** No se tocó una línea
+de `public/`. `git diff public/` vacío.
+
+### Pendiente (necesita la mano del usuario, no del código)
+
+Crear el servicio de Postgres en Railway, cargar las credenciales de R2 y
+apuntar el CNAME de `sgo.dot4sa.com`. Ver el final de esta entrada en el
+historial de la conversación / el panel de Railway.
+
+**Nota sobre la versión de `pg_dump`:** `nixpacks.toml` instala
+`postgresql_17`. `pg_dump` se niega a volcar una base de un server **más
+nuevo** que él, así que si Railway alguna vez provisiona un Postgres 18+, hay
+que subir ese número. Mientras tanto no es urgente: el backup cae al volcado
+JSON y lo avisa en el log.
+
+**La base local vieja de SQLite (`data/sgo.sqlite*`) quedó en disco, sin
+tocar.** Ya no la lee nadie. No se migró a Postgres porque era data de
+desarrollo y producción todavía no existía; si hiciera falta, es un script de
+una sola pasada.
+
+---
+
 ## 2026-08-06 (5) — Target de deploy cambiado de Dokploy/MacBook a Railway (solo docs)
 
 Target de deploy cambiado de Dokploy/MacBook a Railway. DB sigue en SQLite
@@ -303,19 +409,18 @@ pintan bien.
 
 ## Próximo paso
 
-**Fase de infra: deploy.** Dockerfile multi-stage (`better-sqlite3` es módulo
-nativo: necesita toolchain al instalar, no en runtime; usar `node:24-slim`, no
-Alpine), Volume persistente de Railway en `/data` con
-`SGO_DB_PATH=/data/sgo.sqlite`, healthcheck contra `/health`, y conectar el
-repo en Railway. Falta resolver los permisos de escritura del Volume (se
-monta como `root`, el contenedor corre como `node` — ver ARQUITECTURA.md §7)
-y configurar backup a un bucket externo, ya que Railway no lo da
-automático.
+**Terminar de conectar Railway.** El código ya está: falta crear el servicio
+de Postgres en el proyecto, cargar las variables (`DATABASE_URL` como
+referencia `${{Postgres.DATABASE_URL}}`, más las cuatro `R2_*`) y apuntar el
+CNAME de `sgo.dot4sa.com` al dominio que dé Railway.
 
-Nota para esa fase: `npm install` avisa que el script de build de
-`better-sqlite3` queda bloqueado por la política de scripts de npm. En local
-funciona igual, pero en el build de Docker hay que confirmar que el binario
-nativo se compila o se baja bien.
+Después de eso, lo primero a mirar es el log del primer backup (arranca 2
+minutos después del boot): confirma de una sola vez que Postgres, `pg_dump` y
+las credenciales de R2 están todos bien.
+
+**Y después: login.** Sigue siendo el hueco más grande — la app no tiene
+autenticación y con dominio propio deja de estar escondida detrás de una URL
+que nadie conoce.
 
 ---
 

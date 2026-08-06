@@ -1,7 +1,7 @@
 # CLAUDE.md — reglas para trabajar en este repo
 
 SGO: mini-app de control de gastos de obra. Front vanilla JS sin build, servido
-por Fastify, con persistencia documental en SQLite. Leer
+por Fastify, con persistencia documental en Postgres. Leer
 [ARQUITECTURA.md](ARQUITECTURA.md) antes de tocar la capa de datos.
 
 ---
@@ -65,8 +65,10 @@ un descuido que haya que arreglar de paso.
 Qué implica en la práctica:
 
 - **El server no calcula plata.** Persiste el JSON que arma el front en una
-  columna `TEXT`, opaco: no suma, no redondea, no compara montos. Mantenerlo
-  así.
+  columna `JSONB`, opaco: no suma, no redondea, no compara montos. Mantenerlo
+  así. (`jsonb` guarda los números como `numeric`, de precisión decimal
+  exacta, así que la ida y vuelta por la base no cambia ningún monto —
+  verificado, ver PROGRESS.md.)
 - **No agregar lógica de plata al backend** sobre la representación actual. Si
   alguna vez hace falta, lo primero es pasar a enteros en centavos, y eso es un
   cambio con su propia discusión.
@@ -128,8 +130,8 @@ abiertos a la vez. No hay login todavía.
 
 ## 6. Dependencias
 
-Las actuales son `fastify`, `@fastify/static` y `better-sqlite3`. `pino` viene
-con Fastify.
+Las actuales son `fastify`, `@fastify/static`, `pg` y `@aws-sdk/client-s3`
+(este último solo para subir el backup a R2). `pino` viene con Fastify.
 
 **No agregar dependencias sin avisar y justificar.** El valor de este stack es
 que es chico y se entiende entero. Antes de sumar un paquete: ver si Node lo
@@ -137,17 +139,22 @@ trae de fábrica (por ejemplo, `--env-file` reemplaza a `dotenv`).
 
 ## 7. Datos destructivos
 
-No hay migraciones: la base arranca limpia y la tabla se crea sola. Si alguna
-tarea implicara un `DROP`, `DELETE` o `ALTER` destructivo sobre datos
-existentes: **frenar y pedir OK explícito**.
+No hay migraciones: la tabla se crea sola con `CREATE TABLE IF NOT EXISTS` al
+arrancar. Si alguna tarea implicara un `DROP`, `DELETE`, `TRUNCATE` o `ALTER`
+destructivo sobre datos existentes: **frenar y pedir OK explícito**.
 
-Mismo cuidado con `data/` a nivel de shell: antes de borrar o limpiar esa
-carpeta en la raíz del repo, confirmar que no hay un `npm run dev` real
-corriendo contra esa ruta (`lsof -iTCP -sTCP:LISTEN | grep node`). Ya pasó una
-vez que una limpieza de datos de prueba se llevó puesta la base real del
-usuario (ver PROGRESS.md, 2026-08-06). No hay backup automático todavía.
+Mismo cuidado a nivel de shell con `dropdb`, `psql -c "TRUNCATE ..."` o
+`pg_restore --clean`: antes de correrlos, confirmar contra **qué** base
+apuntan. La `DATABASE_URL` de producción y la de desarrollo se parecen lo
+suficiente como para equivocarse. Para pruebas, crear una base nueva
+(`createdb sgo_test`) en vez de limpiar una existente. Ya pasó una vez que una
+limpieza de datos de prueba se llevó puesta la base real del usuario (ver
+PROGRESS.md, 2026-08-06).
 
-## 8. Deploy: Railway
+Hay backup automático a R2 (§8), pero es diario: entre backup y backup se
+pierde hasta un día de trabajo. No es red para un borrado a mano.
+
+## 8. Deploy: Railway + Postgres
 
 El molde de deploy para SGO y las demás mini-apps es Railway (PaaS en la
 nube). Push a `main` → Railway buildea la imagen → corre el healthcheck
@@ -155,18 +162,27 @@ contra `/health` → recién ahí corta el tráfico a la versión nueva. Railway
 mantiene la versión anterior sirviendo mientras tanto; si el build o el
 healthcheck fallan, la versión nueva no sale y la anterior sigue en pie.
 
-La base SQLite vive en un **Volume persistente de Railway montado en
-`/data`** (`SGO_DB_PATH=/data/sgo.sqlite`). **Sin el volume, la data se borra
-en cada deploy.** El backup **no** es automático en Railway: se configura
-aparte (ver §7, todavía pendiente).
+Dos servicios en el mismo proyecto de Railway: **la app** y **Postgres**. La
+app recibe la conexión por `DATABASE_URL`, que se apunta al servicio de base
+con una referencia (`${{Postgres.DATABASE_URL}}`), no con la URL copiada a
+mano: así sigue andando si Railway rota las credenciales. Adentro de Railway
+el tráfico va por la red privada (`*.railway.internal`), que **no** lleva TLS;
+`src/db.js` decide el SSL según el host y no hay que tocar nada.
 
-Esto es solo el contrato de deploy; la configuración real de Railway
-(Dockerfile, volume, variables de entorno) es una fase aparte — ver
-PROGRESS.md.
+No hay Dockerfile ni volume: el build es Nixpacks (`nixpacks.toml` solo agrega
+el cliente de Postgres para que exista `pg_dump`) y la config de deploy vive en
+`railway.json`.
+
+El backup **no** lo da Railway: lo hace la app, un `pg_dump` diario a
+Cloudflare R2 con retención de 30 días (`src/backup.js`). Es una tarea de
+fondo aislada — si falla, loguea y la app sigue sirviendo igual. Nunca
+convertirla en algo que pueda tumbar el server o hacer fallar el healthcheck.
 
 ## 9. Antes de dar algo por terminado
 
-- `npm run dev` levanta y `curl localhost:3000/health` devuelve `200`.
+- `npm run dev` levanta contra un Postgres real y `curl localhost:3000/health`
+  devuelve `200` con `"db":"ok"` (necesita `DATABASE_URL` en `.env`; sin base
+  el server muere al arrancar, a propósito).
 - Ningún monto ni fórmula cambió de valor.
 - Los criterios de aceptación relevantes en [PROGRESS.md](PROGRESS.md) siguen en
   verde.

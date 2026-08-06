@@ -1,11 +1,13 @@
 node_modules/
 .DS_Store
 
-# Base de datos local (el volumen en prod vive fuera del repo)
+# Datos locales y volcados de base (la base de producción vive en Railway)
 data/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+*.dump
+*.sql
 
 # Entorno: solo se versiona .env.example
 .env
