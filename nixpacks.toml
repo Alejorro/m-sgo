@@ -6,8 +6,12 @@
 # los paquetes que Nixpacks pone por default (Node, npm).
 #
 # OJO con la versión: pg_dump se niega a volcar una base de un server MÁS NUEVO
-# que él. Si Railway provisiona un Postgres más nuevo que el de acá, subir este
-# número. Mientras tanto no es urgente: el backup cae solo al volcado JSON de
-# la tabla `docs` (ver src/backup.js) y avisa en el log.
+# que él ("aborting because of server version mismatch"). Railway provisiona
+# hoy `postgres-ssl:18`, así que acá va 18. Si algún día la base sube de
+# versión, subir esto también.
+#
+# Si se desincroniza no es una urgencia: el backup detecta el fallo de pg_dump
+# y cae solo al volcado JSON de la tabla `docs` (ver src/backup.js), avisando
+# con un `warn` en el log. Sigue habiendo backup, en otro formato.
 [phases.setup]
-nixPkgs = ["...", "postgresql_17"]
+nixPkgs = ["...", "postgresql_18"]

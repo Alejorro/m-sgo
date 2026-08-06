@@ -91,22 +91,50 @@ no en "sin conexión".
 **CA-9 (equivalencia del motor de cálculo): sin riesgo.** No se tocó una línea
 de `public/`. `git diff public/` vacío.
 
+### Railway: conectado y andando
+
+Proyecto `innovative-renewal`, servicio `m-sgo` (ya existía, del intento de
+deploy con SQLite que nunca llegó a levantar). Se le agregó el servicio
+**Postgres** y se apuntó `DATABASE_URL` con la referencia
+`${{Postgres.DATABASE_URL}}`, que resuelve a `postgres.railway.internal` — o
+sea red privada, sin TLS, que es justo lo que contempla `sslPara()`. Se borró
+la variable `SGO_DB_PATH`.
+
+Deploy **SUCCESS**, verificado contra producción: `/health` devuelve `200`
+con `"db":"ok"` (o sea el `SELECT 1` viaja bien por la red privada), el front
+sirve `200` y `GET /api/docs` devuelve `{"docs":{}}` — base nueva y vacía,
+como corresponde.
+
+**`pg_dump`: la versión se desincronizó y se arregló.** Railway provisionó
+`postgres-ssl:18` y `nixpacks.toml` instalaba `postgresql_17`. Verificado
+dentro del contenedor (`railway ssh`): `pg_dump` 17.6 contra server 18.4
+aborta con *"aborting because of server version mismatch"*. Se subió a
+`postgresql_18`. Nótese que el plan B funcionó como estaba pensado: el backup
+no se hubiera apagado, hubiera caído al volcado JSON avisando en el log.
+
+**Dominio `sgo.dot4sa.com`** creado en Railway. Falta el CNAME del lado del
+DNS.
+
+**Bug del CLI, por si reaparece:** `railway domain <dominio>` devuelve
+`Unauthorized` aunque `railway whoami` y `railway variables` funcionen —
+manda el token viejo (`user.token`) en vez del `user.accessToken`. Se creó el
+dominio con la mutación `customDomainCreate` de la API GraphQL directamente,
+con el `accessToken`. No es un problema de permisos ni de plan.
+
 ### Pendiente (necesita la mano del usuario, no del código)
 
-Crear el servicio de Postgres en Railway, cargar las credenciales de R2 y
-apuntar el CNAME de `sgo.dot4sa.com`. Ver el final de esta entrada en el
-historial de la conversación / el panel de Railway.
+- Las cuatro credenciales `R2_*`: sin ellas el backup arranca **apagado** (lo
+  dice en el log). Es lo único que falta para cerrar el punto de backup.
+- El CNAME `sgo` → `pselz0e9.up.railway.app` en el DNS de `dot4sa.com`.
 
-**Nota sobre la versión de `pg_dump`:** `nixpacks.toml` instala
-`postgresql_17`. `pg_dump` se niega a volcar una base de un server **más
-nuevo** que él, así que si Railway alguna vez provisiona un Postgres 18+, hay
-que subir ese número. Mientras tanto no es urgente: el backup cae al volcado
-JSON y lo avisa en el log.
+**Quedó un Volume (`m-sgo-volume`, montado en `/data`) de la etapa SQLite**,
+ya sin uso: nada lo lee ni lo escribe. No se borró para no tocar
+almacenamiento sin OK explícito (CLAUDE.md §7). Conviene sacarlo.
 
 **La base local vieja de SQLite (`data/sgo.sqlite*`) quedó en disco, sin
 tocar.** Ya no la lee nadie. No se migró a Postgres porque era data de
-desarrollo y producción todavía no existía; si hiciera falta, es un script de
-una sola pasada.
+desarrollo y producción nunca llegó a tener datos; si hiciera falta, es un
+script de una sola pasada.
 
 ---
 
