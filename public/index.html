@@ -149,9 +149,70 @@
     .card-header{padding:.6rem .9rem;}
     .tab-pane-body .card.mb-3{margin-bottom:1.25rem !important;}
   }
+  /* Pantalla de acceso (ver el bloque #gate más abajo). */
+  body.gate-locked{overflow:hidden;}
+  #gate{position:fixed;inset:0;z-index:3000;background:var(--sgo-bg);display:flex;align-items:center;justify-content:center;padding:1rem;}
+  #gate .gate-box{width:100%;max-width:300px;text-align:center;}
+  #gate .gate-logo{font-size:3.25rem;font-weight:700;letter-spacing:.14em;line-height:1;color:#0d6efd;}
+  #gate .gate-sub{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:#6c757d;margin:.4rem 0 1.6rem;}
+  #gate input{text-align:center;letter-spacing:.3em;}
+  #gate input::placeholder{letter-spacing:normal;}
+  #gate .gate-error{font-size:.8rem;color:#dc3545;min-height:1.15rem;margin:.45rem 0 .35rem;}
+  .gate-shake{animation:gate-shake .3s;}
+  @keyframes gate-shake{
+    25%{transform:translateX(-7px);} 50%{transform:translateX(7px);} 75%{transform:translateX(-4px);}
+  }
 </style>
 </head>
-<body>
+<body class="gate-locked">
+
+<!-- Pantalla de acceso: una capa mínima para que la app no quede a la vista de
+     cualquiera que abra la URL. Es solo del lado del cliente —la API (/api)
+     sigue abierta y la clave está en este archivo—, así que no reemplaza a un
+     login; está pedida así, a propósito. El desbloqueo se recuerda por pestaña
+     (sessionStorage) para que recargar no vuelva a pedir la clave. -->
+<div id="gate">
+  <form class="gate-box" onsubmit="return gateSubmit(event)">
+    <div class="gate-logo">SGO</div>
+    <div class="gate-sub">Control de Gastos de Obra</div>
+    <input type="password" class="form-control form-control-lg" id="gate-pass"
+           inputmode="numeric" autocomplete="off" placeholder="Contraseña" autofocus>
+    <div class="gate-error" id="gate-error"></div>
+    <button class="btn btn-primary w-100" type="submit">Entrar</button>
+  </form>
+</div>
+
+<script>
+(function () {
+  const CLAVE = '1686';
+  const FLAG = 'sgo_gate_ok';
+
+  function abrir() {
+    try { sessionStorage.setItem(FLAG, '1'); } catch (e) { /* modo privado: no se recuerda */ }
+    const gate = document.getElementById('gate');
+    if (gate) gate.remove();
+    document.body.classList.remove('gate-locked');
+  }
+
+  window.gateSubmit = function (e) {
+    e.preventDefault();
+    const input = document.getElementById('gate-pass');
+    if (input.value.trim() === CLAVE) { abrir(); return false; }
+    document.getElementById('gate-error').textContent = 'Contraseña incorrecta';
+    input.value = '';
+    input.focus();
+    const box = document.querySelector('#gate .gate-box');
+    box.classList.remove('gate-shake');
+    void box.offsetWidth;   // reinicia la animación si ya se había disparado
+    box.classList.add('gate-shake');
+    return false;
+  };
+
+  let recordado = false;
+  try { recordado = sessionStorage.getItem(FLAG) === '1'; } catch (e) { /* ídem */ }
+  if (recordado) abrir();
+})();
+</script>
 
 <div id="toast-area"></div>
 
