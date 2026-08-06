@@ -144,10 +144,41 @@ Quedó en **`sgo.dot4sa.com.ar`**, no en `.com`. Las dos zonas son distintas:
 está delegada a Route 53 y tiene colgado el Microsoft 365 de la empresa —
 tocarla para un subdominio no valía el riesgo.
 
-El CNAME `sgo` → `n7ikq8cx.up.railway.app` está cargado y los dos NS
-autoritativos lo devuelven. Al momento de escribir esto, Google y Cloudflare
-todavía servían la respuesta negativa cacheada (el SOA declara 86400 s), así
-que Railway seguía en `VALIDATING_OWNERSHIP`. Es espera, no configuración.
+**Railway pide DOS registros, no uno:**
+
+| Tipo | Nombre | Valor |
+|---|---|---|
+| `CNAME` | `sgo` | `n7ikq8cx.up.railway.app` |
+| `TXT` | `_railway-verify.sgo` | `railway-verify=513d5f11e742d804c3e7f80357ec5f9b919…` |
+
+Ojo con esto: la query `domains { customDomains { status { dnsRecords } } }`
+de la API GraphQL devolvía **solo el CNAME**, mientras el panel web mostraba
+los dos. Sin el TXT, Railway no valida aunque el CNAME esté perfecto. Si
+alguna vez un dominio queda colgado en `VALIDATING_OWNERSHIP`, mirar el panel
+y no la API.
+
+Ambos registros quedaron cargados y verificados en los dos NS autoritativos.
+
+**Por qué la validación tarda: 24 h de caché negativa.** El SOA de
+`dot4sa.com.ar` declara `minimum = 86400`. Google (`8.8.8.8`) y Cloudflare
+(`1.1.1.1`) consultaron los nombres *antes* de que existieran —Railway los
+consulta al validar— se guardaron el `NXDOMAIN`, y por contrato del protocolo
+lo sostienen 24 h sin volver a preguntar. Quad9, que nunca los cacheó,
+devolvía `NOERROR` con el registro correcto desde el primer minuto.
+
+Se descartó todo lo demás antes de concluir esto: la delegación en los TLD de
+`.com.ar` coincide con los NS de la zona, `ns3` y `ns4` están sincronizados y
+tienen ambos registros, no hay DNSSEC, y Google resolvía sin problema el resto
+de la zona (`api`, `forecast`, `www`). O sea: configuración correcta, espera
+de caché.
+
+Se acelera con los formularios de vaciado —https://dns.google/cache y
+https://one.one.one.one/purge-cache/— pidiendo los dos nombres, cada uno con
+su tipo.
+
+**Deuda de la zona:** ese `minimum = 86400` es alto (hoy se usa 300–3600) y
+va a repetir este problema con cada subdominio nuevo. Si el panel deja editar
+el SOA, conviene bajarlo.
 
 **Quedó un Volume (`m-sgo-volume`, montado en `/data`) de la etapa SQLite**,
 ya sin uso: nada lo lee ni lo escribe. No se borró para no tocar
@@ -459,18 +490,23 @@ pintan bien.
 
 ## Próximo paso
 
-**Terminar de conectar Railway.** El código ya está: falta crear el servicio
-de Postgres en el proyecto, cargar las variables (`DATABASE_URL` como
-referencia `${{Postgres.DATABASE_URL}}`, más las cuatro `R2_*`) y apuntar el
-CNAME de `sgo.dot4sa.com` al dominio que dé Railway.
+**La infra está terminada.** App, Postgres, deploy automático y backup diario
+a R2 andando y verificados. Lo único abierto es esperar a que Google y
+Cloudflare venzan su caché negativa para que Railway emita el certificado de
+`sgo.dot4sa.com.ar` (ver "Dominio" arriba): es espera, no trabajo.
 
-Después de eso, lo primero a mirar es el log del primer backup (arranca 2
-minutos después del boot): confirma de una sola vez que Postgres, `pg_dump` y
-las credenciales de R2 están todos bien.
+**Lo siguiente de verdad es el login.** Es el hueco más grande que queda: la
+app no tiene autenticación y, con dominio propio, deja de estar escondida
+detrás de una URL que nadie conoce. Cuando se haga, se revisa también el
+protocolo de dos usuarios de CLAUDE.md.
 
-**Y después: login.** Sigue siendo el hueco más grande — la app no tiene
-autenticación y con dominio propio deja de estar escondida detrás de una URL
-que nadie conoce.
+Dos cabos sueltos menores, ambos esperando OK explícito (CLAUDE.md §7):
+
+- El **Volume `m-sgo-volume`** (montado en `/data`) de la etapa SQLite sigue
+  atado al servicio sin que nada lo use. Conviene sacarlo.
+- La base local vieja `data/sgo.sqlite*` y las bases de prueba creadas en el
+  Postgres local (`sgo_dev`, `sgo_api_test`, `sgo_front_test`,
+  `sgo_restore_test`, `sgo_r2_restore`) siguen en la máquina de desarrollo.
 
 ---
 

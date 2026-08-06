@@ -296,6 +296,25 @@ Reglas de diseño:
 La primera corrida arranca 2 minutos después del boot, para no competir con el
 healthcheck del deploy.
 
+Para restaurar hace falta un `pg_restore` de la misma versión mayor o más
+nueva que el `pg_dump` que escribió el archivo (hoy, 18). Uno más viejo lo
+rechaza por versión de formato del archivo, no por el contenido.
+
+### Dominio propio
+
+Railway exige **dos** registros DNS por dominio: el `CNAME` de tráfico y un
+`TXT` en `_railway-verify.<sub>` para probar propiedad. Sin el TXT el dominio
+queda en `VALIDATING_OWNERSHIP` para siempre, aunque el CNAME resuelva bien.
+
+Dos trampas que ya costaron tiempo, anotadas en PROGRESS.md:
+
+- La query `dnsRecords` de la API GraphQL de Railway devuelve **solo el
+  CNAME**; el panel web muestra los dos. Ante una validación colgada, mirar el
+  panel.
+- `railway domain <dominio>` del CLI falla con `Unauthorized` aunque el resto
+  del CLI funcione: manda `user.token` en vez de `user.accessToken`. La
+  mutación `customDomainCreate` de la API sí funciona.
+
 ---
 
 ## 8. Límites actuales

@@ -155,3 +155,26 @@ de base, no como URL pegada a mano.
 
 No hay Dockerfile ni volumen: la config vive en `railway.json` y
 `nixpacks.toml`, versionadas. Detalle en [ARQUITECTURA.md](ARQUITECTURA.md) §7.
+
+### Dominio
+
+La app vive en `sgo.dot4sa.com.ar`. **Son dos dominios distintos y es fácil
+confundirlos:** `dot4sa.com.ar` se administra desde el panel de Hostmar (ahí
+están también `api.` y `forecast.`), mientras que `dot4sa.com` está delegado a
+Route 53 y tiene colgado el Microsoft 365 de la empresa. Cargar un registro
+en el panel equivocado no da error: simplemente no hace nada.
+
+Railway pide **dos** registros por dominio, no uno:
+
+```
+CNAME   sgo                    → n7ikq8cx.up.railway.app
+TXT     _railway-verify.sgo    → railway-verify=…
+```
+
+Sin el TXT no valida, aunque el CNAME esté perfecto.
+
+Un dominio nuevo puede tardar **hasta 24 h** en validar: el SOA de la zona
+declara `minimum = 86400`, así que si algún resolver preguntó por el nombre
+antes de que existiera, cachea el `NXDOMAIN` un día entero. Se acelera con
+https://dns.google/cache y https://one.one.one.one/purge-cache/, pidiendo cada
+nombre con su tipo.

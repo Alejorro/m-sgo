@@ -173,6 +173,10 @@ No hay Dockerfile ni volume: el build es Nixpacks (`nixpacks.toml` solo agrega
 el cliente de Postgres para que exista `pg_dump`) y la config de deploy vive en
 `railway.json`.
 
+El dominio es **`sgo.dot4sa.com.ar`**. Cuidado: `dot4sa.com` (sin `.ar`) es
+otro dominio, con otra zona DNS y el mail de la empresa colgando de ahí. No
+tocarlo. Ver README §Dominio.
+
 El backup **no** lo da Railway: lo hace la app, un `pg_dump` diario a
 Cloudflare R2 con retención de 30 días (`src/backup.js`). Es una tarea de
 fondo aislada — si falla, loguea y la app sigue sirviendo igual. Nunca
