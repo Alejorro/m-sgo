@@ -112,8 +112,8 @@ aborta con *"aborting because of server version mismatch"*. Se subió a
 `postgresql_18`. Nótese que el plan B funcionó como estaba pensado: el backup
 no se hubiera apagado, hubiera caído al volcado JSON avisando en el log.
 
-**Dominio `sgo.dot4sa.com`** creado en Railway. Falta el CNAME del lado del
-DNS.
+**Dominio:** se creó primero `sgo.dot4sa.com` y se descartó — ver la sección
+"Dominio" más abajo.
 
 **Bug del CLI, por si reaparece:** `railway domain <dominio>` devuelve
 `Unauthorized` aunque `railway whoami` y `railway variables` funcionen —
