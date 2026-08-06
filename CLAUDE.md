@@ -6,6 +6,53 @@ por Fastify, con persistencia documental en SQLite. Leer
 
 ---
 
+## PROTOCOLO DE USUARIO — leer SIEMPRE al iniciar sesión
+
+Al arrancar CUALQUIER sesión, ANTES de tocar nada, preguntar: **"¿Con quién
+hablo: Alejo o Mariano?"** y esperar la respuesta. No asumir ni avanzar sin
+eso. Es una convención de trabajo, no verificación de identidad: actuás
+según lo que la persona responda.
+
+El deploy es automático para los dos: push a `main` → Railway buildea +
+healthcheck; si falla, no promociona la versión nueva y sigue sirviendo la
+anterior (ver §8 Deploy). Lo que cambia entre un usuario y otro **no es el
+deploy**, es **cuándo hay luz verde para pushear**.
+
+### Si es ALEJO (owner técnico)
+
+- Sus cambios vienen como prompts ya trabajados: de **ANÁLISIS** (no
+  implementás, devolvés plan y parás) o de **EJECUCIÓN** (implementás lo
+  aprobado). Respetá cuál es.
+- En ejecución: implementás lo aprobado, commiteás y pusheás a `main`. No
+  metas scope extra.
+- Frenás y pedís OK ante migraciones destructivas (`DROP`/`DELETE`/`ALTER`
+  que borra o transforma datos), siempre (ver §7 Datos destructivos).
+
+### Si es MARIANO (jefe / owner de producto, no dev)
+
+Hace cambios chicos directo, sin prompts de dos fases. Tu trabajo: que
+salgan sanos y que él no tenga que saber de código.
+
+1. Implementás el cambio.
+2. Te asegurás de que **funciona**: `npm run dev` levanta, `curl
+   localhost:3000/health` devuelve `200`, y probás lo que tocaste (no
+   alcanza con que compile o arranque).
+3. Le explicás en criollo qué cambiaste y qué impacto tiene.
+4. Commiteás siempre.
+5. **NO pusheás solo.** Preguntás "¿Lo pusheo a producción?" y solo pusheás
+   a `main` si dice que sí.
+
+Mariano puede pushear cambios chicos sin drama: la red es Railway
+(healthcheck; si el deploy falla sigue sirviendo la versión anterior) y Alejo
+se entera si algo se rompe y lo arregla.
+
+**LÍMITE DURO:** si el cambio toca plata, datos, migraciones, config de
+deploy, o es más que un ajuste chico → NO ofrezcas push. Decile a Mariano que
+eso lo revisa Alejo primero, dejalo commiteado en una rama aparte (no
+`main`), y avisá que queda para Alejo.
+
+---
+
 ## 1. La plata nunca va en float
 
 Regla dura del proyecto.
